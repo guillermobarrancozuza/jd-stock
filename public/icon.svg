@@ -1,0 +1,6 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <rect width="512" height="512" rx="128" fill="#0D1117"/>
+    <rect x="24" y="24" width="464" height="464" rx="104" stroke="#F59E0B" stroke-width="8" stroke-dasharray="16 16"/>
+    <text x="256" y="270" font-family="system-ui, -apple-system, sans-serif" font-weight="900" font-size="140" fill="#F59E0B" text-anchor="middle">JD</text>
+    <text x="256" y="360" font-family="system-ui, -apple-system, sans-serif" font-weight="700" font-size="44" fill="#E6EDF3" text-anchor="middle" letter-spacing="4">STOCK</text>
+  </svg>

@@ -16,11 +16,14 @@ import {
   Users,
   Menu,
   X as XIcon,
+  Camera,
+  Smartphone,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.tsx';
 import { useInventory } from '../../context/InventoryContext.tsx';
 import { UserRole } from '../../types/inventory.ts';
 import { AdminLoginModal } from '../auth/AdminLoginModal.tsx';
+import { PWAInstallButton } from '../pwa/PWAInstallButton.tsx';
 
 interface NavbarProps {
   onNavigate: (view: string) => void;
@@ -29,6 +32,8 @@ interface NavbarProps {
   onSearchChange: (q: string) => void;
   onToggleMobileMenu?: () => void;
   isMobileMenuOpen?: boolean;
+  onOpenScanner?: () => void;
+  onOpenMobileAppModal?: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -38,6 +43,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   onSearchChange,
   onToggleMobileMenu,
   isMobileMenuOpen,
+  onOpenScanner,
+  onOpenMobileAppModal,
 }) => {
   const { currentUser, userProfile, isAdmin, loginWithGoogle, logout } = useAuth();
   const { events, incidents, items } = useInventory();
@@ -126,11 +133,38 @@ export const Navbar: React.FC<NavbarProps> = ({
       </div>
 
       {/* Quick Action Buttons & User Controls */}
-      <div className="flex items-center gap-2 sm:gap-3">
+      <div className="flex items-center gap-2 sm:gap-2.5">
+        {/* PWA Install Button (Chromium / iOS) */}
+        <PWAInstallButton />
+
+        {/* Mobile Camera QR & Barcode Scanner Button */}
+        {onOpenScanner && (
+          <button
+            onClick={onOpenScanner}
+            className="flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 text-xs font-bold transition shadow-xs cursor-pointer"
+            title="Abrir Escáner de Cámara para Códigos QR y Códigos de Barras"
+          >
+            <Camera className="w-3.5 h-3.5 text-amber-400" />
+            <span className="hidden sm:inline">Escanear QR</span>
+          </button>
+        )}
+
+        {/* Link Phone / PWA Info Modal */}
+        {onOpenMobileAppModal && (
+          <button
+            onClick={onOpenMobileAppModal}
+            className="hidden md:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-zinc-700 text-xs font-medium transition cursor-pointer"
+            title="Conectar con tu móvil y ver guía de instalación PWA"
+          >
+            <Smartphone className="w-3.5 h-3.5 text-cyan-400" />
+            <span>App Móvil</span>
+          </button>
+        )}
+
         {/* Quick Action: Salida */}
         <button
           onClick={() => onOpenQuickAction('dispatch')}
-          className="hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 text-xs font-semibold transition"
+          className="hidden lg:flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 text-xs font-semibold transition"
           title="Preparar y registrar salida de material para evento"
         >
           <Truck className="w-3.5 h-3.5" />
@@ -140,7 +174,7 @@ export const Navbar: React.FC<NavbarProps> = ({
         {/* Quick Action: Devolución */}
         <button
           onClick={() => onOpenQuickAction('return')}
-          className="hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-xs font-semibold transition"
+          className="hidden xl:flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-xs font-semibold transition"
           title="Registrar devolución de material y comprobación técnica"
         >
           <RotateCcw className="w-3.5 h-3.5" />
@@ -150,7 +184,7 @@ export const Navbar: React.FC<NavbarProps> = ({
         {/* Quick Action: Incidencia */}
         <button
           onClick={() => onOpenQuickAction('incident')}
-          className="hidden lg:flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 text-xs font-semibold transition"
+          className="hidden xl:flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 text-xs font-semibold transition"
           title="Dar de alta avería o equipo en reparación"
         >
           <Wrench className="w-3.5 h-3.5" />

@@ -18,6 +18,8 @@ import {
   Sliders,
   FileSignature,
   ShieldCheck,
+  Camera,
+  Smartphone,
 } from 'lucide-react';
 import { useInventory } from '../../context/InventoryContext.tsx';
 import { useAuth } from '../../context/AuthContext.tsx';
@@ -26,9 +28,17 @@ interface SidebarProps {
   currentView: string;
   onNavigate: (view: string) => void;
   onClose?: () => void;
+  onOpenScanner?: () => void;
+  onOpenMobileAppModal?: () => void;
 }
 
-export const Sidebar: React.FC<SidebarProps> = ({ currentView, onNavigate, onClose }) => {
+export const Sidebar: React.FC<SidebarProps> = ({
+  currentView,
+  onNavigate,
+  onClose,
+  onOpenScanner,
+  onOpenMobileAppModal,
+}) => {
   const { seedInitialData, events, incidents, items, contracts } = useInventory();
   const { canManageInventory, canViewContracts, canManageUsers } = useAuth();
 
@@ -52,6 +62,22 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentView, onNavigate, onClo
       title: 'PRINCIPAL',
       items: [
         { id: 'dashboard', label: 'Panel General', icon: LayoutDashboard },
+        {
+          id: 'scanner_action',
+          label: 'Escanear QR (Cámara)',
+          icon: Camera,
+          badge: 'Móvil',
+          badgeColor: 'bg-amber-500/20 text-amber-300 border border-amber-500/40',
+          onClick: onOpenScanner,
+        },
+        {
+          id: 'mobile_action',
+          label: 'Vincular Móvil (PWA)',
+          icon: Smartphone,
+          badge: 'Instalar',
+          badgeColor: 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40',
+          onClick: onOpenMobileAppModal,
+        },
       ],
     },
     {
@@ -111,7 +137,11 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentView, onNavigate, onClo
                   <button
                     key={item.id}
                     onClick={() => {
-                      onNavigate(item.id);
+                      if ((item as any).onClick) {
+                        (item as any).onClick();
+                      } else {
+                        onNavigate(item.id);
+                      }
                       if (onClose) onClose();
                     }}
                     className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-medium transition cursor-pointer ${

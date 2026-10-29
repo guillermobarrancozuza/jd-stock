@@ -21,6 +21,9 @@ import { ReportsView } from './components/reports/ReportsView.tsx';
 import { ContractsView } from './components/contracts/ContractsView.tsx';
 import { UsersManagementView } from './components/users/UsersManagementView.tsx';
 import { LoginPage } from './components/auth/LoginPage.tsx';
+import { MobileScannerModal } from './components/scanner/MobileScannerModal.tsx';
+import { MobileAppModal } from './components/pwa/MobileAppModal.tsx';
+import { OfflineIndicator } from './components/pwa/OfflineIndicator.tsx';
 import { Clock } from 'lucide-react';
 
 import { useAuth } from './context/AuthContext.tsx';
@@ -30,6 +33,8 @@ function MainApp() {
   const [globalSearch, setGlobalSearch] = useState<string>('');
   const [initialDispatchEventId, setInitialDispatchEventId] = useState<string | null>(null);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [isScannerOpen, setIsScannerOpen] = useState(false);
+  const [isMobileAppModalOpen, setIsMobileAppModalOpen] = useState(false);
   const { canViewContracts, canManageUsers } = useAuth();
 
   // If user role is not admin, prevent access to contracts and users views
@@ -72,12 +77,19 @@ function MainApp() {
         onSearchChange={setGlobalSearch}
         onToggleMobileMenu={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
         isMobileMenuOpen={isMobileMenuOpen}
+        onOpenScanner={() => setIsScannerOpen(true)}
+        onOpenMobileAppModal={() => setIsMobileAppModalOpen(true)}
       />
 
       <div className="flex flex-1 relative">
         {/* Left Desktop Sidebar */}
         <div className="hidden lg:block shrink-0">
-          <Sidebar currentView={currentView} onNavigate={setCurrentView} />
+          <Sidebar
+            currentView={currentView}
+            onNavigate={setCurrentView}
+            onOpenScanner={() => setIsScannerOpen(true)}
+            onOpenMobileAppModal={() => setIsMobileAppModalOpen(true)}
+          />
         </div>
 
         {/* Mobile Drawer Overlay */}
@@ -92,6 +104,8 @@ function MainApp() {
                 currentView={currentView}
                 onNavigate={setCurrentView}
                 onClose={() => setIsMobileMenuOpen(false)}
+                onOpenScanner={() => setIsScannerOpen(true)}
+                onOpenMobileAppModal={() => setIsMobileAppModalOpen(true)}
               />
             </div>
           </div>
@@ -146,6 +160,23 @@ function MainApp() {
           {currentView === 'users' && <UsersManagementView />}
         </main>
       </div>
+
+      {/* Optical Camera QR / Barcode Scanner Modal */}
+      <MobileScannerModal
+        isOpen={isScannerOpen}
+        onClose={() => setIsScannerOpen(false)}
+        onNavigateToView={(view) => setCurrentView(view)}
+      />
+
+      {/* Link Mobile & PWA Install Guidance Modal */}
+      <MobileAppModal
+        isOpen={isMobileAppModalOpen}
+        onClose={() => setIsMobileAppModalOpen(false)}
+        onOpenScanner={() => setIsScannerOpen(true)}
+      />
+
+      {/* PWA Offline Connectivity Indicator */}
+      <OfflineIndicator />
     </div>
   );
 }
