@@ -12,6 +12,7 @@ import {
   Clock,
   AlertCircle,
   Building,
+  Building2,
   Calendar,
   Sparkles,
   ShieldCheck,
@@ -25,6 +26,7 @@ import {
   List,
   Layers,
   Download,
+  Edit3,
 } from 'lucide-react';
 import { useInventory } from '../../context/InventoryContext.tsx';
 import { useAuth } from '../../context/AuthContext.tsx';
@@ -32,6 +34,8 @@ import { Contract, ContractStatus } from '../../types/inventory.ts';
 import { GenerateContractModal } from './GenerateContractModal.tsx';
 import { PaymentGatewayModal } from './PaymentGatewayModal.tsx';
 import { PrintContractModal } from './PrintContractModal.tsx';
+import { CompanyFiscalConfigModal } from './CompanyFiscalConfigModal.tsx';
+import { EditContractModal } from './EditContractModal.tsx';
 import { composeWhatsAppContractMessage } from '../../lib/barcodeUtils.ts';
 
 interface ContractsViewProps {
@@ -39,7 +43,7 @@ interface ContractsViewProps {
 }
 
 export const ContractsView: React.FC<ContractsViewProps> = ({ onNavigate }) => {
-  const { contracts, updateContractStatus } = useInventory();
+  const { contracts, updateContractStatus, companyFiscalConfig } = useInventory();
   const { userProfile, canManageInventory } = useAuth();
 
   const [viewMode, setViewMode] = useState<'list' | 'folders'>('list');
@@ -72,6 +76,8 @@ export const ContractsView: React.FC<ContractsViewProps> = ({ onNavigate }) => {
   const [isGenerateModalOpen, setIsGenerateModalOpen] = useState(false);
   const [gatewayContract, setGatewayContract] = useState<Contract | null>(null);
   const [printContract, setPrintContract] = useState<Contract | null>(null);
+  const [isCompanyConfigModalOpen, setIsCompanyConfigModalOpen] = useState(false);
+  const [editingContract, setEditingContract] = useState<Contract | null>(null);
 
   // Quick WhatsApp send
   const handleOpenWhatsApp = (contract: Contract) => {
@@ -237,21 +243,40 @@ export const ContractsView: React.FC<ContractsViewProps> = ({ onNavigate }) => {
             <FileSignature className="w-6 h-6" />
           </div>
           <div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <h1 className="text-xl sm:text-2xl font-black text-white tracking-tight">
                 Contratos y Facturación
               </h1>
-              <span className="text-[10px] font-bold uppercase tracking-wider bg-amber-500/20 text-amber-300 border border-amber-500/30 px-2 py-0.5 rounded">
-                JD AUDIOVISUALES S.L.
-              </span>
+              <button
+                type="button"
+                onClick={() => setIsCompanyConfigModalOpen(true)}
+                className="text-[10px] font-bold uppercase tracking-wider bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 px-2.5 py-1 rounded flex items-center gap-1.5 transition cursor-pointer"
+                title="Pulsa para cambiar CIF de empresa, ubicación y sede de almacén"
+              >
+                <Building className="w-3 h-3 text-amber-400" />
+                <span>{companyFiscalConfig?.tradeName || companyFiscalConfig?.companyName || 'JD AUDIOVISUALES S.L.'}</span>
+                <span className="text-cyan-300 font-mono">({companyFiscalConfig?.cif || 'B-89234812'})</span>
+                <span className="text-[9px] bg-amber-500/30 text-amber-200 px-1 rounded">Editar ✎</span>
+              </button>
             </div>
             <p className="text-xs sm:text-sm text-zinc-400 mt-1 max-w-2xl">
-              Gestión de contratos con archivo por carpetas mensuales, pasarela de cobro bancario SEPA (Anticipo 10% o Pago Total 100%) y descarga de documentos en PDF.
+              Ubicación sede: <span className="text-zinc-300 font-medium">{companyFiscalConfig?.address || 'Polígono Industrial La Estación, Nave 4'}</span>. Gestión de contratos por carpetas, pasarela SEPA (Anticipo 10% o Pago Total 100%) y descarga PDF.
             </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-2.5 shrink-0">
+        <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+          {/* Button to edit Company Fiscal Data, Location & CIF */}
+          <button
+            type="button"
+            onClick={() => setIsCompanyConfigModalOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-[#0d1117] hover:bg-[#1c2128] text-amber-300 hover:text-amber-200 border border-amber-500/30 hover:border-amber-500/60 text-xs font-bold transition shadow-xs cursor-pointer"
+            title="Cambiar CIF, ubicación de la empresa, teléfono, email, cuenta bancaria y cláusulas"
+          >
+            <Building2 className="w-3.5 h-3.5 text-amber-400" />
+            <span>⚙️ Mi CIF & Ubicación</span>
+          </button>
+
           {/* View Mode Switcher */}
           <div className="flex items-center bg-[#0d1117] p-1 rounded-xl border border-[#30363d]">
             <button
@@ -264,7 +289,7 @@ export const ContractsView: React.FC<ContractsViewProps> = ({ onNavigate }) => {
               }`}
             >
               <List className="w-3.5 h-3.5" />
-              <span>Lista General</span>
+              <span>Lista</span>
             </button>
             <button
               type="button"
@@ -276,7 +301,7 @@ export const ContractsView: React.FC<ContractsViewProps> = ({ onNavigate }) => {
               }`}
             >
               <FolderArchive className="w-3.5 h-3.5" />
-              <span>Carpetas Mensuales</span>
+              <span>Carpetas</span>
             </button>
           </div>
 
@@ -555,6 +580,15 @@ export const ContractsView: React.FC<ContractsViewProps> = ({ onNavigate }) => {
                                         <div className="flex items-center gap-1.5">
                                           <button
                                             type="button"
+                                            onClick={() => setEditingContract(c)}
+                                            className="px-2 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-amber-400 border border-zinc-700 hover:border-amber-500/40 text-[11px] font-bold flex items-center gap-1 cursor-pointer transition"
+                                            title="Editar contrato, CIF y ubicación del evento"
+                                          >
+                                            <Edit3 className="w-3 h-3" />
+                                            <span>Editar</span>
+                                          </button>
+                                          <button
+                                            type="button"
                                             onClick={() => setGatewayContract(c)}
                                             className="px-2.5 py-1.5 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-500/40 text-[11px] font-bold flex items-center gap-1 cursor-pointer"
                                             title="Pasarela de pago bancaria"
@@ -716,6 +750,16 @@ export const ContractsView: React.FC<ContractsViewProps> = ({ onNavigate }) => {
                       {/* Quick Direct Actions */}
                       <td className="py-3.5 px-4">
                         <div className="flex flex-wrap items-center justify-center gap-1.5">
+                          {/* Edit Contract Button */}
+                          <button
+                            onClick={() => setEditingContract(c)}
+                            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-amber-400 border border-zinc-700 hover:border-amber-500/40 text-[11px] font-bold transition shadow-xs cursor-pointer"
+                            title="Editar contrato, CIF del cliente y ubicación del evento"
+                          >
+                            <Edit3 className="w-3.5 h-3.5" />
+                            <span>Editar</span>
+                          </button>
+
                           {/* Prominent Payment Gateway Button */}
                           <button
                             onClick={() => setGatewayContract(c)}
@@ -789,6 +833,19 @@ export const ContractsView: React.FC<ContractsViewProps> = ({ onNavigate }) => {
         isOpen={Boolean(printContract)}
         onClose={() => setPrintContract(null)}
         contract={printContract}
+      />
+
+      {/* Company Fiscal, Location and Bank Configuration Modal */}
+      <CompanyFiscalConfigModal
+        isOpen={isCompanyConfigModalOpen}
+        onClose={() => setIsCompanyConfigModalOpen(false)}
+      />
+
+      {/* Edit Contract, Client CIF and Event Location Modal */}
+      <EditContractModal
+        isOpen={Boolean(editingContract)}
+        contract={editingContract}
+        onClose={() => setEditingContract(null)}
       />
     </div>
   );
