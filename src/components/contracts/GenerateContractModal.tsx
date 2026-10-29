@@ -50,6 +50,7 @@ export const GenerateContractModal: React.FC<GenerateContractModalProps> = ({
   const [iban, setIban] = useState(DEFAULT_BANK_DETAILS.iban);
   const [bic, setBic] = useState(DEFAULT_BANK_DETAILS.bic);
   const [bizumPhone, setBizumPhone] = useState(DEFAULT_BANK_DETAILS.bizumPhone);
+  const [hasBizum, setHasBizum] = useState<boolean>(false);
   const [depositRate, setDepositRate] = useState<number>(10);
   const [paymentConcept, setPaymentConcept] = useState('');
 
@@ -123,6 +124,7 @@ export const GenerateContractModal: React.FC<GenerateContractModalProps> = ({
             iban: iban || generated.bankDetails.iban,
             bic: bic || generated.bankDetails.bic,
             bizumPhone: bizumPhone || generated.bankDetails.bizumPhone,
+            hasBizum,
             paymentConcept: paymentConcept || generated.bankDetails.paymentConcept,
           },
         });
@@ -171,6 +173,7 @@ export const GenerateContractModal: React.FC<GenerateContractModalProps> = ({
             iban,
             bic,
             bizumPhone,
+            hasBizum,
             paymentConcept: paymentConcept || `RESERVA ${eventName.slice(0, 15).toUpperCase().trim()}`,
           },
         });
@@ -578,15 +581,34 @@ export const GenerateContractModal: React.FC<GenerateContractModalProps> = ({
                 />
               </div>
 
-              <div>
-                <label className="block text-zinc-400 mb-1 text-[11px] font-medium">Teléfono / Clave Bizum</label>
-                <input
-                  type="text"
-                  value={bizumPhone}
-                  onChange={(e) => setBizumPhone(e.target.value)}
-                  placeholder="+34 650 123 456"
-                  className="w-full bg-[#161b22] border border-[#30363d] rounded-lg px-2.5 py-1.5 text-xs text-white font-mono focus:outline-none focus:border-amber-500"
-                />
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="block text-zinc-400 text-[11px] font-medium">Bizum de Empresa</label>
+                  <button
+                    type="button"
+                    onClick={() => setHasBizum(!hasBizum)}
+                    className={`px-2 py-0.5 rounded text-[10px] font-bold transition cursor-pointer ${
+                      hasBizum
+                        ? 'bg-emerald-500 text-black'
+                        : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-zinc-700'
+                    }`}
+                  >
+                    {hasBizum ? '✓ Bizum Activado' : 'Activar Bizum'}
+                  </button>
+                </div>
+                {hasBizum ? (
+                  <input
+                    type="text"
+                    value={bizumPhone}
+                    onChange={(e) => setBizumPhone(e.target.value)}
+                    placeholder="+34 650 123 456"
+                    className="w-full bg-[#161b22] border border-[#30363d] rounded-lg px-2.5 py-1.5 text-xs text-emerald-300 font-mono font-bold focus:outline-none focus:border-emerald-500"
+                  />
+                ) : (
+                  <span className="block text-[10px] text-zinc-500 italic py-1">
+                    Deshabilitado por defecto para este contrato. Pulsa "Activar Bizum" para incluirlo.
+                  </span>
+                )}
               </div>
 
               <div>

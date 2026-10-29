@@ -753,6 +753,11 @@ export function composeWhatsAppContractMessage(contract: {
     ? `*IMPORTANTE:* Para confirmar el pago integro del servicio y asegurar la reserva y disponibilidad de los equipos tecnicos, por favor realice la transferencia del 100% (${targetPaymentAmount.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} EUR) y remitanos el justificante respondiendo a este mensaje.`
     : `*IMPORTANTE:* Para asegurar la reserva y disponibilidad de los equipos tecnicos y bloquear definitivamente la fecha en nuestra agenda, por favor realice la transferencia del 10% de fianza (${targetPaymentAmount.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} EUR) y remitanos el comprobante respondiendo a este mensaje.`;
 
+  const bizumLine =
+    contract.bankDetails.hasBizum && contract.bankDetails.bizumPhone
+      ? `- *Bizum de Empresa:* ${contract.bankDetails.bizumPhone}\n`
+      : '';
+
   const text = `*JD CONTROL DE STOCK - FACTURA Y CONTRATO DE SERVICIO*
 
 Hola *${contract.clientName}*, le enviamos el desglose oficial de su presupuesto y reserva tecnica:
@@ -772,7 +777,7 @@ ${paymentBreakdown}
 - *Entidad:* ${contract.bankDetails.bankName}
 - *IBAN:* ${contract.bankDetails.iban}
 - *Concepto obligatorio:* ${contract.bankDetails.paymentConcept}
-
+${bizumLine}
 ${instructionText}
 
 Quedamos a su entera disposicion.

@@ -260,8 +260,8 @@ export const LoginPage: React.FC = () => {
             )}
           </div>
 
-          <p className="text-[10px] text-zinc-500 text-center mt-3">
-            Cualquier persona puede conectarse con su cuenta de Google con acceso verificado.
+          <p className="text-[10px] text-zinc-400 text-center mt-3">
+            Cualquier persona puede conectarse con su cuenta de Google. Accederá con permisos operativos base y el Administrador gestionará y asignará sus permisos desde el panel de Personal y Roles.
           </p>
         </div>
 

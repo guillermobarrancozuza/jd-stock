@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { X, Printer, Download, CreditCard, ShieldCheck, Edit3, Save, Plus, Trash2 } from 'lucide-react';
+import { X, Printer, Download, CreditCard, ShieldCheck, Edit3, Save, Plus, Trash2, Smartphone } from 'lucide-react';
 import { Contract, CompanyFiscalConfig } from '../../types/inventory.ts';
 import { buildSepaEpcPayload, generateQrDataUrl } from '../../lib/barcodeUtils.ts';
 import { useInventory } from '../../context/InventoryContext.tsx';
@@ -35,6 +35,8 @@ export const PrintContractModal: React.FC<PrintContractModalProps> = ({
   const [accountHolder, setAccountHolder] = useState('');
   const [bankName, setBankName] = useState('');
   const [iban, setIban] = useState('');
+  const [hasBizum, setHasBizum] = useState<boolean>(false);
+  const [bizumPhone, setBizumPhone] = useState<string>('');
   const [terms, setTerms] = useState<string[]>([]);
   const [newTerm, setNewTerm] = useState('');
   const [saveSuccess, setSaveSuccess] = useState(false);
@@ -53,6 +55,8 @@ export const PrintContractModal: React.FC<PrintContractModalProps> = ({
       setAccountHolder(contract.bankDetails.accountHolder || defaultBankDetails?.accountHolder || 'JD AUDIOVISUALES S.L.');
       setBankName(contract.bankDetails.bankName || defaultBankDetails?.bankName || 'CaixaBank');
       setIban(contract.bankDetails.iban || defaultBankDetails?.iban || 'ES09 2100 8286 3302 0009 7660');
+      setHasBizum(contract.bankDetails.hasBizum ?? defaultBankDetails?.hasBizum ?? false);
+      setBizumPhone(contract.bankDetails.bizumPhone || defaultBankDetails?.bizumPhone || '+34 650 123 456');
       if (contract.clauses && contract.clauses.length > 0) {
         setTerms(contract.clauses);
       }
@@ -89,17 +93,21 @@ export const PrintContractModal: React.FC<PrintContractModalProps> = ({
       termsAndConditions: terms,
     });
 
-    // 2. Persist bank details
+    // 2. Persist bank details with Bizum setting
     updateDefaultBankDetails({
       accountHolder: accountHolder.trim(),
       bankName: bankName.trim(),
       iban: iban.trim(),
+      hasBizum,
+      bizumPhone: bizumPhone.trim(),
     });
 
     // 3. Update active contract document directly
     contract.bankDetails.accountHolder = accountHolder.trim();
     contract.bankDetails.bankName = bankName.trim();
     contract.bankDetails.iban = iban.trim();
+    contract.bankDetails.hasBizum = hasBizum;
+    contract.bankDetails.bizumPhone = bizumPhone.trim();
     contract.clauses = terms;
 
     // 4. Save contract in storage/state
@@ -325,6 +333,47 @@ export const PrintContractModal: React.FC<PrintContractModalProps> = ({
                     className="w-full bg-[#161b22] border border-[#30363d] rounded p-1.5 text-xs text-amber-300 font-mono font-bold"
                   />
                 </div>
+              </div>
+
+              {/* Bizum Toggle (Disabled by default, can be activated on demand) */}
+              <div className="pt-2 border-t border-[#30363d] space-y-2">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-2.5 rounded-lg bg-[#161b22] border border-[#30363d]">
+                  <div className="flex items-center gap-2.5">
+                    <Smartphone className={`w-4 h-4 ${hasBizum ? 'text-emerald-400' : 'text-zinc-500'}`} />
+                    <div>
+                      <span className="text-xs font-semibold text-white block">Bizum de Empresa</span>
+                      <span className="text-[10px] text-zinc-400">
+                        {hasBizum
+                          ? 'Activado: Se incluirá en la factura, contrato y mensajes como opción de cobro alternativa'
+                          : 'Deshabilitado (por defecto): Pulsa el botón para activarlo si la empresa puede recibir Bizum'}
+                      </span>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setHasBizum(!hasBizum)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer shrink-0 ${
+                      hasBizum
+                        ? 'bg-emerald-500 text-black shadow-xs'
+                        : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-zinc-700'
+                    }`}
+                  >
+                    {hasBizum ? '✓ Bizum Activado' : 'Activar Bizum'}
+                  </button>
+                </div>
+
+                {hasBizum && (
+                  <div className="animate-in fade-in">
+                    <label className="text-[10px] text-zinc-400 block mb-0.5">Teléfono Bizum Empresa</label>
+                    <input
+                      type="text"
+                      value={bizumPhone}
+                      onChange={(e) => setBizumPhone(e.target.value)}
+                      placeholder="+34 650 123 456"
+                      className="w-full bg-[#161b22] border border-[#30363d] rounded p-1.5 text-xs text-emerald-300 font-mono font-bold"
+                    />
+                  </div>
+                )}
               </div>
             </div>
 
@@ -594,6 +643,12 @@ export const PrintContractModal: React.FC<PrintContractModalProps> = ({
                       <strong className="text-amber-800 font-mono text-[11px]">{contract.bankDetails.paymentConcept}</strong>
                     </div>
                   </div>
+                  {contract.bankDetails.hasBizum && contract.bankDetails.bizumPhone && (
+                    <div className="mt-2 text-[10px] text-emerald-800 bg-emerald-50 border border-emerald-200 px-2 py-1 rounded flex items-center gap-1.5">
+                      <Smartphone className="w-3.5 h-3.5 text-emerald-600" />
+                      <span>Bizum Empresa Habilitado: <strong className="font-mono text-zinc-900">{contract.bankDetails.bizumPhone}</strong></span>
+                    </div>
+                  )}
                 </div>
 
                 {/* QR SEPA */}
@@ -904,7 +959,14 @@ function generateContractHtml(
         <span style="color: #4b5563;">Beneficiario:</span> <strong>${contract.bankDetails.accountHolder}</strong><br>
         <span style="color: #4b5563;">Entidad:</span> <strong>${contract.bankDetails.bankName}</strong><br>
         <span style="color: #4b5563;">IBAN:</span> <strong style="font-family: monospace; font-size: 12px;">${contract.bankDetails.iban}</strong><br>
-        <span style="color: #4b5563;">Concepto:</span> <strong style="font-family: monospace; color: #92400e;">${contract.bankDetails.paymentConcept}</strong>
+        <span style="color: #4b5563;">Concepto:</span> <strong style="font-family: monospace; color: #92400e;">${contract.bankDetails.paymentConcept}</strong><br>
+        ${
+          contract.bankDetails.hasBizum && contract.bankDetails.bizumPhone
+            ? `<div style="margin-top: 6px; padding: 4px 8px; background: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 4px; font-size: 10px; color: #065f46; display: inline-block;">
+            Bizum Empresa Habilitado: <strong style="font-family: monospace;">${contract.bankDetails.bizumPhone}</strong>
+          </div>`
+            : ''
+        }
       </div>
       ${
         epcQrUrl
