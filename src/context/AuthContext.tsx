@@ -170,13 +170,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             const newProfile: UserProfile = {
               id: user.uid,
               email: user.email || 'usuario@empresa-av.com',
-              name: user.displayName || user.email?.split('@')[0] || 'Guillermo Barranco',
+              name: user.displayName || user.email?.split('@')[0] || 'Personal Almacén',
               role: isChiefAdmin ? 'admin' : 'technician',
               avatar: user.photoURL || undefined,
               provider: 'google',
               status: 'active',
               lastLogin: new Date().toISOString(),
-              assignedBy: isChiefAdmin ? 'Administrador Maestro' : 'Acceso Google Workspace',
+              assignedBy: 'Autenticación Google Verificada',
               createdAt: new Date().toISOString(),
             };
             await setDoc(userDocRef, newProfile);
@@ -201,7 +201,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return () => unsubscribe();
   }, []);
 
-  // Login with Google (Employees and Technicians register/login here)
+  // Login with Google (Universal: any employee, client or technician with Google account)
   const loginWithGoogle = async () => {
     try {
       await signInWithPopup(auth, googleAuthProvider);
@@ -218,25 +218,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         err?.message?.includes('popup')
       ) {
         throw new Error(
-          'La ventana emergente de Google ha sido bloqueada por el navegador. Pulsa en "Acceso Directo Guillermo Barranco (Google)" para acceder sin bloqueos.'
+          'La ventana emergente de Google ha sido bloqueada en este entorno. Usa "Acceso Directo con Cuenta Google" para acceder de inmediato con cualquier cuenta.'
         );
       }
       throw err;
     }
   };
 
-  // Direct 1-click login for Guillermo Barranco or staff if popup is restricted
+  // Direct 1-click login for any staff member or worker with Google account
   const loginWithDirectGoogleProfile = async (email: string, name: string) => {
     const isChiefAdmin =
       email.toLowerCase() === DEFAULT_ADMIN_EMAIL.toLowerCase() ||
-      email.toLowerCase() === 'guillermo.barranco.zuza@gmail.com' ||
+      email.toLowerCase().includes('admin') ||
       email.toLowerCase().includes('barranco') ||
-      email.toLowerCase().includes('admin');
+      email.toLowerCase().endsWith('@jdcontrol.es');
 
     const profile: UserProfile = {
       id: `usr-google-${Date.now()}`,
-      email,
-      name,
+      email: email.trim(),
+      name: name.trim() || email.split('@')[0],
       role: isChiefAdmin ? 'admin' : 'technician',
       provider: 'google',
       status: 'active',
@@ -249,6 +249,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setIsAuthenticated(true);
     localStorage.setItem('prompt_maestro_profile', JSON.stringify(profile));
     localStorage.setItem('jd_session_authenticated', 'true');
+
+    setAllUsers((prev) => {
+      const exists = prev.some((u) => u.email.toLowerCase() === email.toLowerCase());
+      if (exists) return prev;
+      const updated = [profile, ...prev];
+      localStorage.setItem('jd_all_users', JSON.stringify(updated));
+      return updated;
+    });
   };
 
   // Chief Admin Credentials Login

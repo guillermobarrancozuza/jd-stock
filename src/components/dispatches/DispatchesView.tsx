@@ -19,12 +19,14 @@ import {
   Search,
   PackagePlus,
   RotateCcw,
+  Wrench,
 } from 'lucide-react';
 import { DispatchNote, Item, ItemUnit } from '../../types/inventory.ts';
 import { useInventory } from '../../context/InventoryContext.tsx';
 import { useAuth } from '../../context/AuthContext.tsx';
 import { TabletSignatureModal } from './TabletSignatureModal.tsx';
 import { QrPhotoScannerModal } from '../maintenance/QrPhotoScannerModal.tsx';
+import { DirectDamageReportModal } from '../maintenance/DirectDamageReportModal.tsx';
 
 interface DispatchesViewProps {
   initialEventId?: string | null;
@@ -81,6 +83,7 @@ export const DispatchesView: React.FC<DispatchesViewProps> = ({
   const [noteToPrint, setNoteToPrint] = useState<DispatchNote | null>(null);
   const [signatureDispatch, setSignatureDispatch] = useState<DispatchNote | null>(null);
   const [isScannerOpen, setIsScannerOpen] = useState(false);
+  const [isDamageModalOpen, setIsDamageModalOpen] = useState(false);
 
   // Manage existing dispatch items modal
   const [manageDispatch, setManageDispatch] = useState<DispatchNote | null>(null);
@@ -275,7 +278,16 @@ export const DispatchesView: React.FC<DispatchesViewProps> = ({
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={() => setIsDamageModalOpen(true)}
+            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/30 font-bold text-xs transition cursor-pointer"
+            title="Reportar material roto o dañado durante la expedición directamente a Averías / SAT"
+          >
+            <Wrench className="w-4 h-4 text-rose-400" />
+            <span>Reportar Avería a SAT</span>
+          </button>
+
           <button
             onClick={() => setIsScannerOpen(true)}
             className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-500/40 font-bold text-xs transition cursor-pointer"
@@ -939,6 +951,14 @@ export const DispatchesView: React.FC<DispatchesViewProps> = ({
           clientName={signatureDispatch.clientName}
         />
       )}
+
+      {/* Direct Damage Report Modal to SAT */}
+      <DirectDamageReportModal
+        isOpen={isDamageModalOpen}
+        onClose={() => setIsDamageModalOpen(false)}
+        sourceContext="dispatch"
+        referenceName={selectedEvent ? selectedEvent.name : 'Salidas Almacén'}
+      />
     </div>
   );
 };

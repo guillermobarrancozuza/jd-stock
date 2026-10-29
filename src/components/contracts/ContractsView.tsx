@@ -45,10 +45,28 @@ export const ContractsView: React.FC<ContractsViewProps> = ({ onNavigate }) => {
   const [viewMode, setViewMode] = useState<'list' | 'folders'>('list');
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | ContractStatus>('all');
-  const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>({
+  const [expandedYears, setExpandedYears] = useState<Record<number, boolean>>({
+    2026: true,
+    2025: true,
+  });
+  const [expandedMonths, setExpandedMonths] = useState<Record<string, boolean>>({
     '2026-11': true,
     '2026-10': true,
   });
+
+  const toggleYear = (year: number) => {
+    setExpandedYears((prev) => ({
+      ...prev,
+      [year]: !prev[year],
+    }));
+  };
+
+  const toggleMonth = (folderKey: string) => {
+    setExpandedMonths((prev) => ({
+      ...prev,
+      [folderKey]: !prev[folderKey],
+    }));
+  };
 
   // Modals state
   const [isGenerateModalOpen, setIsGenerateModalOpen] = useState(false);
@@ -75,13 +93,6 @@ export const ContractsView: React.FC<ContractsViewProps> = ({ onNavigate }) => {
     await updateContractStatus(contractId, 'deposit_paid', reference);
   };
 
-  const toggleFolder = (folderKey: string) => {
-    setExpandedFolders((prev) => ({
-      ...prev,
-      [folderKey]: !prev[folderKey],
-    }));
-  };
-
   // Filtered contracts
   const filteredContracts = contracts.filter((c) => {
     const matchesSearch =
@@ -95,32 +106,55 @@ export const ContractsView: React.FC<ContractsViewProps> = ({ onNavigate }) => {
     return matchesSearch && matchesStatus;
   });
 
-  // Grouping by Month (YYYY-MM)
-  const monthlyFolders = React.useMemo(() => {
-    const groups: Record<
-      string,
+  // Grouping by Year and then divided into Months
+  const yearlyFolders = React.useMemo(() => {
+    const yearMap: Record<
+      number,
       {
-        folderKey: string;
-        label: string;
         year: number;
-        monthName: string;
-        contracts: Contract[];
+        totalContracts: number;
         totalAmount: number;
         depositAmount: number;
+        monthsMap: Record<
+          string,
+          {
+            folderKey: string;
+            label: string;
+            year: number;
+            monthName: string;
+            contracts: Contract[];
+            totalAmount: number;
+            depositAmount: number;
+          }
+        >;
       }
     > = {};
 
     filteredContracts.forEach((contract) => {
       const d = new Date(contract.eventDate || contract.createdAt);
-      const year = d.getFullYear();
+      const year = isNaN(d.getFullYear()) ? new Date().getFullYear() : d.getFullYear();
       const monthNumber = String(d.getMonth() + 1).padStart(2, '0');
       const folderKey = `${year}-${monthNumber}`;
-      const monthName = d.toLocaleDateString('es-ES', { month: 'long' });
-      const capitalizedMonth = monthName.charAt(0).toUpperCase() + monthName.slice(1);
+      const rawMonthName = d.toLocaleDateString('es-ES', { month: 'long' });
+      const capitalizedMonth = rawMonthName.charAt(0).toUpperCase() + rawMonthName.slice(1);
       const label = `${capitalizedMonth} ${year}`;
 
-      if (!groups[folderKey]) {
-        groups[folderKey] = {
+      if (!yearMap[year]) {
+        yearMap[year] = {
+          year,
+          totalContracts: 0,
+          totalAmount: 0,
+          depositAmount: 0,
+          monthsMap: {},
+        };
+      }
+
+      yearMap[year].totalContracts += 1;
+      yearMap[year].totalAmount += contract.totalAmount;
+      yearMap[year].depositAmount += contract.depositAmount;
+
+      if (!yearMap[year].monthsMap[folderKey]) {
+        yearMap[year].monthsMap[folderKey] = {
           folderKey,
           label,
           year,
@@ -131,12 +165,17 @@ export const ContractsView: React.FC<ContractsViewProps> = ({ onNavigate }) => {
         };
       }
 
-      groups[folderKey].contracts.push(contract);
-      groups[folderKey].totalAmount += contract.totalAmount;
-      groups[folderKey].depositAmount += contract.depositAmount;
+      yearMap[year].monthsMap[folderKey].contracts.push(contract);
+      yearMap[year].monthsMap[folderKey].totalAmount += contract.totalAmount;
+      yearMap[year].monthsMap[folderKey].depositAmount += contract.depositAmount;
     });
 
-    return Object.values(groups).sort((a, b) => b.folderKey.localeCompare(a.folderKey));
+    return Object.values(yearMap)
+      .sort((a, b) => b.year - a.year)
+      .map((y) => ({
+        ...y,
+        months: Object.values(y.monthsMap).sort((a, b) => b.folderKey.localeCompare(a.folderKey)),
+      }));
   }, [filteredContracts]);
 
   // Bulk print all contracts in a monthly folder
@@ -260,7 +299,9 @@ export const ContractsView: React.FC<ContractsViewProps> = ({ onNavigate }) => {
           <span className="text-2xl font-black text-white mt-1 block font-mono">
             {contracts.length}
           </span>
-          <span className="text-[10px] text-zinc-500 block mt-1">En {monthlyFolders.length} carpetas mensuales</span>
+          <span className="text-[10px] text-zinc-500 block mt-1">
+            En {yearlyFolders.length} carpetas anuales ({yearlyFolders.reduce((acc, y) => acc + y.months.length, 0)} meses)
+          </span>
         </div>
 
         <div className="p-4 rounded-xl bg-[#161b22] border border-[#30363d]">
@@ -350,151 +391,221 @@ export const ContractsView: React.FC<ContractsViewProps> = ({ onNavigate }) => {
         </div>
       </div>
 
-      {/* VIEW MODE 1: MONTHLY FOLDERS */}
+      {/* VIEW MODE 1: ANNUAL & MONTHLY FOLDERS */}
       {viewMode === 'folders' ? (
         <div className="space-y-4">
           <div className="flex items-center justify-between px-1">
             <span className="text-xs text-zinc-400 font-semibold uppercase tracking-wider flex items-center gap-2">
               <FolderArchive className="w-4 h-4 text-amber-400" />
-              Carpetas Mensuales de Contratos y Facturas
+              Carpetas Anuales y Mensuales de Contratos y Facturas
             </span>
             <span className="text-xs text-zinc-500 font-mono">
-              {monthlyFolders.length} carpetas activas
+              {yearlyFolders.length} ejercicios anuales archivados
             </span>
           </div>
 
-          {monthlyFolders.length === 0 ? (
+          {yearlyFolders.length === 0 ? (
             <div className="p-12 text-center text-zinc-400 bg-[#161b22] border border-[#30363d] rounded-2xl">
               <Folder className="w-12 h-12 mx-auto text-zinc-600 mb-3" />
-              <p className="font-semibold text-sm text-zinc-300">No hay carpetas para los filtros seleccionados</p>
+              <p className="font-semibold text-sm text-zinc-300">No hay contratos para los filtros seleccionados</p>
             </div>
           ) : (
-            <div className="space-y-4">
-              {monthlyFolders.map((folder) => {
-                const isExpanded = expandedFolders[folder.folderKey] ?? true;
+            <div className="space-y-5">
+              {yearlyFolders.map((yearFolder) => {
+                const isYearExpanded = expandedYears[yearFolder.year] ?? true;
                 return (
                   <div
-                    key={folder.folderKey}
-                    className="bg-[#161b22] border border-[#30363d] rounded-2xl overflow-hidden shadow-lg transition"
+                    key={yearFolder.year}
+                    className="bg-[#161b22] border-2 border-[#30363d] rounded-2xl overflow-hidden shadow-xl"
                   >
-                    {/* Folder Header */}
+                    {/* Annual Folder Header */}
                     <div
-                      onClick={() => toggleFolder(folder.folderKey)}
-                      className="p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-linear-to-r from-[#1c2128] to-[#161b22] hover:bg-[#21262d] cursor-pointer border-b border-[#30363d]"
+                      onClick={() => toggleYear(yearFolder.year)}
+                      className="p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-linear-to-r from-[#1f242c] via-[#161b22] to-[#12161c] hover:bg-[#21262d] cursor-pointer border-b border-[#30363d]"
                     >
                       <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-xl bg-amber-500/10 text-amber-400 border border-amber-500/30 flex items-center justify-center shrink-0">
-                          {isExpanded ? <FolderOpen className="w-5 h-5" /> : <Folder className="w-5 h-5" />}
+                        <div className="w-11 h-11 rounded-xl bg-amber-500/15 text-amber-400 border border-amber-500/40 flex items-center justify-center shrink-0 shadow-xs">
+                          {isYearExpanded ? <FolderOpen className="w-6 h-6 text-amber-400" /> : <Folder className="w-6 h-6 text-amber-500" />}
                         </div>
                         <div>
-                          <div className="flex items-center gap-2">
-                            <h3 className="text-sm font-bold text-white tracking-wide">
-                              {folder.label}
+                          <div className="flex items-center gap-2.5">
+                            <h3 className="text-base font-black text-white tracking-wide">
+                              Carpeta Anual {yearFolder.year}
                             </h3>
-                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 font-mono">
-                              {folder.contracts.length} {folder.contracts.length === 1 ? 'contrato' : 'contratos'}
+                            <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 font-mono">
+                              {yearFolder.totalContracts} {yearFolder.totalContracts === 1 ? 'contrato' : 'contratos'}
+                            </span>
+                            <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-zinc-800 text-zinc-400 border border-zinc-700 hidden sm:inline">
+                              {yearFolder.months.length} {yearFolder.months.length === 1 ? 'mes' : 'meses'}
                             </span>
                           </div>
                           <p className="text-[11px] text-zinc-400 mt-0.5">
-                            Carpeta de archivo mensual para contabilidad y fiscalidad
+                            Archivo anual para contabilidad y facturación, dividido en carpetas mensuales
                           </p>
                         </div>
                       </div>
 
                       <div className="flex items-center gap-4 text-xs">
                         <div className="text-left sm:text-right">
-                          <span className="text-[10px] text-zinc-400 block font-medium">Volumen Total Mes</span>
-                          <span className="font-mono font-bold text-white text-sm">
-                            {folder.totalAmount.toLocaleString('es-ES', { minimumFractionDigits: 2 })} €
+                          <span className="text-[10px] text-zinc-400 block font-medium">Volumen Ejercicio {yearFolder.year}</span>
+                          <span className="font-mono font-bold text-amber-300 text-sm">
+                            {yearFolder.totalAmount.toLocaleString('es-ES', { minimumFractionDigits: 2 })} €
                           </span>
                         </div>
-                        <div className="flex items-center gap-2">
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleBulkPrintFolder(folder.contracts);
-                            }}
-                            className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700 text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer"
-                            title="Abrir lote de contratos de este mes"
-                          >
-                            <Printer className="w-3.5 h-3.5 text-cyan-400" />
-                            <span>Imprimir / PDF</span>
-                          </button>
-                          <div className="p-1 text-zinc-400">
-                            {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-                          </div>
+                        <div className="p-1 text-zinc-400">
+                          {isYearExpanded ? <ChevronDown className="w-5 h-5 text-amber-400" /> : <ChevronRight className="w-5 h-5" />}
                         </div>
                       </div>
                     </div>
 
-                    {/* Folder Content (Contracts List) */}
-                    {isExpanded && (
-                      <div className="divide-y divide-[#30363d]/60 bg-[#0d1117]/50">
-                        {folder.contracts.map((c) => (
-                          <div
-                            key={c.id}
-                            className="p-3.5 sm:px-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-[#161b22] transition"
-                          >
-                            <div className="flex items-start gap-3">
-                              <span className="font-mono font-bold text-amber-400 text-xs bg-amber-500/10 px-2 py-1 rounded border border-amber-500/20 shrink-0">
-                                {c.code}
-                              </span>
-                              <div>
-                                <h4 className="text-xs font-bold text-white flex items-center gap-2">
-                                  <span>{c.eventName}</span>
-                                </h4>
-                                <div className="text-[11px] text-zinc-400 flex flex-wrap items-center gap-2 mt-0.5">
-                                  <span>👤 {c.clientName}</span>
-                                  <span>•</span>
-                                  <span>📅 {new Date(c.eventDate).toLocaleDateString('es-ES')}</span>
-                                  <span>•</span>
-                                  <span>📍 {c.eventLocation}</span>
+                    {/* Sub-Folders: Monthly inside the Year */}
+                    {isYearExpanded && (
+                      <div className="p-3 sm:p-4 space-y-3 bg-[#0d1117]/60">
+                        {yearFolder.months.map((month) => {
+                          const isMonthExpanded = expandedMonths[month.folderKey] ?? true;
+                          return (
+                            <div
+                              key={month.folderKey}
+                              className="bg-[#161b22] border border-[#30363d] rounded-xl overflow-hidden shadow-sm"
+                            >
+                              {/* Monthly Subfolder Header */}
+                              <div
+                                onClick={() => toggleMonth(month.folderKey)}
+                                className="p-3 sm:p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-linear-to-r from-[#161b22] to-[#1a1f26] hover:bg-[#21262d] cursor-pointer border-b border-[#30363d]/70"
+                              >
+                                <div className="flex items-center gap-2.5">
+                                  <div className="w-8 h-8 rounded-lg bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 flex items-center justify-center shrink-0">
+                                    {isMonthExpanded ? <FolderOpen className="w-4 h-4" /> : <Folder className="w-4 h-4" />}
+                                  </div>
+                                  <div>
+                                    <div className="flex items-center gap-2">
+                                      <h4 className="text-xs font-bold text-white tracking-wide">
+                                        {month.label}
+                                      </h4>
+                                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 font-mono">
+                                        {month.contracts.length} {month.contracts.length === 1 ? 'contrato' : 'contratos'}
+                                      </span>
+                                    </div>
+                                  </div>
+                                </div>
+
+                                <div className="flex items-center gap-3 text-xs">
+                                  <div className="text-left sm:text-right">
+                                    <span className="text-[10px] text-zinc-400 block font-medium">Facturación Mes</span>
+                                    <span className="font-mono font-bold text-white text-xs">
+                                      {month.totalAmount.toLocaleString('es-ES', { minimumFractionDigits: 2 })} €
+                                    </span>
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleBulkPrintFolder(month.contracts);
+                                      }}
+                                      className="px-2.5 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700 text-[11px] font-semibold flex items-center gap-1 transition cursor-pointer"
+                                      title="Abrir contrato de este mes"
+                                    >
+                                      <Printer className="w-3 h-3 text-cyan-400" />
+                                      <span>Ver Lote</span>
+                                    </button>
+                                    <div className="p-1 text-zinc-400">
+                                      {isMonthExpanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+                                    </div>
+                                  </div>
                                 </div>
                               </div>
-                            </div>
 
-                            <div className="flex items-center justify-between sm:justify-end gap-3 shrink-0">
-                              <div className="text-left sm:text-right">
-                                <span className="font-bold text-white text-xs block font-mono">
-                                  {c.totalAmount.toLocaleString('es-ES', { minimumFractionDigits: 2 })} €
-                                </span>
-                                <span className="text-[10px] text-amber-400/90 font-mono block">
-                                  10%: {c.depositAmount.toLocaleString('es-ES', { minimumFractionDigits: 2 })} €
-                                </span>
-                              </div>
+                              {/* Contracts inside this Month */}
+                              {isMonthExpanded && (
+                                <div className="divide-y divide-[#30363d]/60 bg-[#0d1117]/40">
+                                  {month.contracts.map((c) => (
+                                    <div
+                                      key={c.id}
+                                      className="p-3 sm:px-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-[#161b22] transition"
+                                    >
+                                      <div className="flex items-start gap-3">
+                                        <span className="font-mono font-bold text-amber-400 text-xs bg-amber-500/10 px-2 py-1 rounded border border-amber-500/20 shrink-0">
+                                          {c.code}
+                                        </span>
+                                        <div>
+                                          <h5 className="text-xs font-bold text-white flex items-center gap-2">
+                                            <span>{c.eventName}</span>
+                                          </h5>
+                                          <div className="text-[11px] text-zinc-400 flex flex-wrap items-center gap-2 mt-0.5">
+                                            <span>👤 {c.clientName}</span>
+                                            <span>•</span>
+                                            <span>📅 {new Date(c.eventDate).toLocaleDateString('es-ES')}</span>
+                                            <span>•</span>
+                                            <span>📍 {c.eventLocation}</span>
+                                          </div>
+                                        </div>
+                                      </div>
 
-                              <div className="flex items-center gap-1.5">
-                                <button
-                                  type="button"
-                                  onClick={() => setGatewayContract(c)}
-                                  className="px-2.5 py-1.5 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-500/40 text-[11px] font-bold flex items-center gap-1 cursor-pointer"
-                                  title="Pasarela de pago bancaria"
-                                >
-                                  <CreditCard className="w-3 h-3" />
-                                  <span className="hidden sm:inline">Pasarela</span>
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => setPrintContract(c)}
-                                  className="px-2.5 py-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[11px] font-bold flex items-center gap-1 cursor-pointer"
-                                  title="Ver factura y contrato en PDF"
-                                >
-                                  <Printer className="w-3 h-3" />
-                                  <span>PDF</span>
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => handleOpenWhatsApp(c)}
-                                  className="p-1.5 rounded-lg bg-[#25D366]/10 hover:bg-[#25D366]/20 text-[#25D366] border border-[#25D366]/30 cursor-pointer"
-                                  title="Enviar por WhatsApp"
-                                >
-                                  <MessageCircle className="w-3.5 h-3.5" />
-                                </button>
-                              </div>
+                                      <div className="flex items-center justify-between sm:justify-end gap-3 shrink-0">
+                                        <div className="text-left sm:text-right">
+                                          <span className="font-bold text-white text-xs block font-mono">
+                                            {c.totalAmount.toLocaleString('es-ES', { minimumFractionDigits: 2 })} €
+                                          </span>
+                                          <span className="text-[10px] text-amber-400/90 font-mono block">
+                                            10%: {c.depositAmount.toLocaleString('es-ES', { minimumFractionDigits: 2 })} €
+                                          </span>
+                                        </div>
+
+                                        <div className="flex items-center gap-1.5">
+                                          <button
+                                            type="button"
+                                            onClick={() => setGatewayContract(c)}
+                                            className="px-2.5 py-1.5 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-500/40 text-[11px] font-bold flex items-center gap-1 cursor-pointer"
+                                            title="Pasarela de pago bancaria"
+                                          >
+                                            <CreditCard className="w-3 h-3" />
+                                            <span className="hidden sm:inline">Pasarela</span>
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => setPrintContract(c)}
+                                            className="px-2.5 py-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[11px] font-bold flex items-center gap-1 cursor-pointer"
+                                            title="Ver factura y contrato con logo"
+                                          >
+                                            <Printer className="w-3 h-3" />
+                                            <span>PDF</span>
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => handleOpenWhatsApp(c)}
+                                            className="p-1.5 rounded-lg bg-[#25D366]/10 hover:bg-[#25D366]/20 text-[#25D366] border border-[#25D366]/30 cursor-pointer"
+                                            title="Enviar por WhatsApp"
+                                          >
+                                            <MessageCircle className="w-3.5 h-3.5" />
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => handleOpenEmail(c)}
+                                            className="p-1.5 rounded-lg bg-blue-500/10 hover:bg-blue-500/20 text-blue-300 border border-blue-500/30 cursor-pointer"
+                                            title="Enviar por correo electrónico"
+                                          >
+                                            <Mail className="w-3.5 h-3.5" />
+                                          </button>
+                                          {c.status === 'sent' && (
+                                            <button
+                                              type="button"
+                                              onClick={() => handleMarkPaid(c.id, 'Transferencia Directa Verificada')}
+                                              className="px-2 py-1 rounded bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 text-[10px] font-bold cursor-pointer"
+                                              title="Marcar fianza del 10% como abonada"
+                                            >
+                                              Marcar 10%
+                                            </button>
+                                          )}
+                                        </div>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
                             </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     )}
                   </div>

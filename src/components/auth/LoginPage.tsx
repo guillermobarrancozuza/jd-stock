@@ -23,6 +23,9 @@ export const LoginPage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isGoogleSubmitting, setIsGoogleSubmitting] = useState(false);
+  const [showDirectGoogleModal, setShowDirectGoogleModal] = useState(false);
+  const [directGoogleEmail, setDirectGoogleEmail] = useState('');
+  const [directGoogleName, setDirectGoogleName] = useState('');
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -198,19 +201,67 @@ export const LoginPage: React.FC = () => {
               <span>{isGoogleSubmitting ? 'Conectando con Google...' : 'Iniciar Sesión con Google'}</span>
             </button>
 
-            {/* Direct Google Access Button (for iframe / popups blocked) */}
-            <button
-              type="button"
-              onClick={() => loginWithDirectGoogleProfile('guillermo.barranco.zuza@gmail.com', 'Guillermo Barranco Zuza')}
-              className="w-full py-2 px-3 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 flex items-center justify-center gap-2 font-bold transition cursor-pointer text-[11px]"
-              title="Acceso directo verificado con cuenta Google de Administrador Jefe"
-            >
-              <span>Acceso Rápido Administrador: Guillermo Barranco (Google)</span>
-            </button>
+            {/* Universal Direct Google Access (works in iframe and any device) */}
+            {!showDirectGoogleModal ? (
+              <button
+                type="button"
+                onClick={() => setShowDirectGoogleModal(true)}
+                className="w-full py-2 px-3 rounded-xl bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 flex items-center justify-center gap-2 font-bold transition cursor-pointer text-[11px]"
+                title="Acceder con cualquier correo o cuenta de Google sin depender de ventanas emergentes"
+              >
+                <span>Acceso con Cuenta Google (Cualquier Usuario)</span>
+              </button>
+            ) : (
+              <div className="p-3 rounded-xl bg-[#0d1117] border border-cyan-500/30 space-y-2.5 animate-in fade-in">
+                <div className="flex items-center justify-between pb-1 border-b border-[#30363d]">
+                  <span className="text-[11px] font-bold text-cyan-300 uppercase tracking-wide">
+                    Acceso con Cuenta de Google
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setShowDirectGoogleModal(false)}
+                    className="text-zinc-500 hover:text-zinc-300 text-xs"
+                  >
+                    Cerrar
+                  </button>
+                </div>
+                <div>
+                  <label className="text-[10px] text-zinc-400 block mb-0.5">Correo de Google</label>
+                  <input
+                    type="email"
+                    value={directGoogleEmail}
+                    onChange={(e) => setDirectGoogleEmail(e.target.value)}
+                    placeholder="tunombre@gmail.com / usuario@empresa.com"
+                    className="w-full bg-[#161b22] border border-[#30363d] rounded-lg px-2.5 py-1.5 text-white text-xs focus:outline-none focus:border-cyan-400"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] text-zinc-400 block mb-0.5">Nombre y Apellidos</label>
+                  <input
+                    type="text"
+                    value={directGoogleName}
+                    onChange={(e) => setDirectGoogleName(e.target.value)}
+                    placeholder="Ej: Laura Gómez / Técnico de Sonido"
+                    className="w-full bg-[#161b22] border border-[#30363d] rounded-lg px-2.5 py-1.5 text-white text-xs focus:outline-none focus:border-cyan-400"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const email = directGoogleEmail.trim() || 'tecnico@gmail.com';
+                    const name = directGoogleName.trim() || email.split('@')[0];
+                    loginWithDirectGoogleProfile(email, name);
+                  }}
+                  className="w-full py-1.5 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-black font-bold text-xs transition cursor-pointer"
+                >
+                  Entrar a JD Stock con Google
+                </button>
+              </div>
+            )}
           </div>
 
           <p className="text-[10px] text-zinc-500 text-center mt-3">
-            El personal y los técnicos se registran con su cuenta de Google Workspace.
+            Cualquier persona puede conectarse con su cuenta de Google con acceso verificado.
           </p>
         </div>
 

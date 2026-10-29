@@ -740,12 +740,6 @@ export function composeWhatsAppContractMessage(contract: {
     equipmentSection = `\n*RESERVA DE EQUIPO Y MATERIAL ASIGNADO:*\n${lines.join('\n')}\n`;
   }
 
-  // Only include Bizum if enabled
-  const bizumLine =
-    contract.bankDetails.hasBizum && contract.bankDetails.bizumPhone
-      ? `- *Bizum de Empresa:* ${contract.bankDetails.bizumPhone}\n`
-      : '';
-
   const paymentBreakdown = isFullPayment
     ? `*DESGLOSE ECONOMICO (PAGO TOTAL):*
 - *Presupuesto Total (100%):* *${contract.totalAmount.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} EUR* (IVA incl.)
@@ -778,7 +772,7 @@ ${paymentBreakdown}
 - *Entidad:* ${contract.bankDetails.bankName}
 - *IBAN:* ${contract.bankDetails.iban}
 - *Concepto obligatorio:* ${contract.bankDetails.paymentConcept}
-${bizumLine}
+
 ${instructionText}
 
 Quedamos a su entera disposicion.

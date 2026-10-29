@@ -15,10 +15,16 @@ export const PrintContractModal: React.FC<PrintContractModalProps> = ({
   onClose,
   contract,
 }) => {
-  const { companyFiscalConfig, updateCompanyFiscalConfig } = useInventory();
+  const {
+    companyFiscalConfig,
+    updateCompanyFiscalConfig,
+    defaultBankDetails,
+    updateDefaultBankDetails,
+    saveContract,
+  } = useInventory();
   const [epcQrUrl, setEpcQrUrl] = useState<string>('');
 
-  // Editing company fiscal data & contractual clauses
+  // Editing company fiscal data, bank details & contractual clauses
   const [isEditingConfig, setIsEditingConfig] = useState(false);
   const [cif, setCif] = useState('');
   const [companyName, setCompanyName] = useState('');
@@ -26,8 +32,12 @@ export const PrintContractModal: React.FC<PrintContractModalProps> = ({
   const [address, setAddress] = useState('');
   const [phone, setPhone] = useState('');
   const [email, setEmail] = useState('');
+  const [accountHolder, setAccountHolder] = useState('');
+  const [bankName, setBankName] = useState('');
+  const [iban, setIban] = useState('');
   const [terms, setTerms] = useState<string[]>([]);
   const [newTerm, setNewTerm] = useState('');
+  const [saveSuccess, setSaveSuccess] = useState(false);
 
   useEffect(() => {
     if (companyFiscalConfig) {
@@ -39,7 +49,15 @@ export const PrintContractModal: React.FC<PrintContractModalProps> = ({
       setEmail(companyFiscalConfig.email);
       setTerms(companyFiscalConfig.termsAndConditions || []);
     }
-  }, [companyFiscalConfig, isOpen]);
+    if (contract) {
+      setAccountHolder(contract.bankDetails.accountHolder || defaultBankDetails?.accountHolder || 'JD AUDIOVISUALES S.L.');
+      setBankName(contract.bankDetails.bankName || defaultBankDetails?.bankName || 'CaixaBank');
+      setIban(contract.bankDetails.iban || defaultBankDetails?.iban || 'ES09 2100 8286 3302 0009 7660');
+      if (contract.clauses && contract.clauses.length > 0) {
+        setTerms(contract.clauses);
+      }
+    }
+  }, [companyFiscalConfig, defaultBankDetails, contract, isOpen]);
 
   useEffect(() => {
     if (contract && isOpen) {
@@ -59,7 +77,8 @@ export const PrintContractModal: React.FC<PrintContractModalProps> = ({
 
   if (!isOpen || !contract) return null;
 
-  const handleSaveCompanyConfig = () => {
+  const handleSaveCompanyConfig = async () => {
+    // 1. Persist company fiscal config
     updateCompanyFiscalConfig({
       cif: cif.trim(),
       companyName: companyName.trim(),
@@ -69,7 +88,39 @@ export const PrintContractModal: React.FC<PrintContractModalProps> = ({
       email: email.trim(),
       termsAndConditions: terms,
     });
-    setIsEditingConfig(false);
+
+    // 2. Persist bank details
+    updateDefaultBankDetails({
+      accountHolder: accountHolder.trim(),
+      bankName: bankName.trim(),
+      iban: iban.trim(),
+    });
+
+    // 3. Update active contract document directly
+    contract.bankDetails.accountHolder = accountHolder.trim();
+    contract.bankDetails.bankName = bankName.trim();
+    contract.bankDetails.iban = iban.trim();
+    contract.clauses = terms;
+
+    // 4. Save contract in storage/state
+    await saveContract(contract);
+
+    // 5. Refresh QR code
+    const epcPayload = buildSepaEpcPayload({
+      bic: contract.bankDetails.bic,
+      recipientName: contract.bankDetails.accountHolder,
+      iban: contract.bankDetails.iban,
+      amount: contract.paymentType === 'full_payment' ? contract.totalAmount : contract.depositAmount,
+      remittanceText: contract.bankDetails.paymentConcept,
+    });
+    const url = await generateQrDataUrl(epcPayload);
+    setEpcQrUrl(url);
+
+    setSaveSuccess(true);
+    setTimeout(() => {
+      setSaveSuccess(false);
+      setIsEditingConfig(false);
+    }, 900);
   };
 
   const handleAddTerm = () => {
@@ -238,6 +289,42 @@ export const PrintContractModal: React.FC<PrintContractModalProps> = ({
                   onChange={(e) => setAddress(e.target.value)}
                   className="w-full bg-[#161b22] border border-[#30363d] rounded p-1.5 text-xs text-white"
                 />
+              </div>
+            </div>
+
+            {/* Bank details for contracts and transfers */}
+            <div className="pt-2 border-t border-[#30363d] space-y-2">
+              <span className="text-[10px] font-bold uppercase text-amber-400 block">
+                Datos Bancarios Oficiales (Transferencia Oficial)
+              </span>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="text-[10px] text-zinc-400 block mb-0.5">Beneficiario / Titular</label>
+                  <input
+                    type="text"
+                    value={accountHolder}
+                    onChange={(e) => setAccountHolder(e.target.value)}
+                    className="w-full bg-[#161b22] border border-[#30363d] rounded p-1.5 text-xs text-white font-semibold"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] text-zinc-400 block mb-0.5">Entidad Bancaria</label>
+                  <input
+                    type="text"
+                    value={bankName}
+                    onChange={(e) => setBankName(e.target.value)}
+                    className="w-full bg-[#161b22] border border-[#30363d] rounded p-1.5 text-xs text-white"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] text-zinc-400 block mb-0.5">IBAN Oficial</label>
+                  <input
+                    type="text"
+                    value={iban}
+                    onChange={(e) => setIban(e.target.value)}
+                    className="w-full bg-[#161b22] border border-[#30363d] rounded p-1.5 text-xs text-amber-300 font-mono font-bold"
+                  />
+                </div>
               </div>
             </div>
 
@@ -507,11 +594,6 @@ export const PrintContractModal: React.FC<PrintContractModalProps> = ({
                       <strong className="text-amber-800 font-mono text-[11px]">{contract.bankDetails.paymentConcept}</strong>
                     </div>
                   </div>
-                  {contract.bankDetails.hasBizum && contract.bankDetails.bizumPhone && (
-                    <div className="text-[10px] text-zinc-500 mt-1">
-                      Bizum Empresa alternativo: <strong>{contract.bankDetails.bizumPhone}</strong>
-                    </div>
-                  )}
                 </div>
 
                 {/* QR SEPA */}

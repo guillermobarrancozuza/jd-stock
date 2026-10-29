@@ -211,6 +211,15 @@ interface InventoryContextType {
     description: string,
     photos?: string[]
   ) => Promise<Incident>;
+  reportDamageDirectly: (data: {
+    itemId: string;
+    quantity: number;
+    serialNumbers?: string[];
+    description: string;
+    sourceContext: 'dispatch' | 'return' | 'warehouse';
+    referenceName?: string;
+    priority?: Incident['priority'];
+  }) => Promise<Incident>;
 
   // System Utilities
   seedInitialData: () => Promise<void>;
@@ -2308,6 +2317,103 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return incident;
   };
 
+  const reportDamageDirectly = async (data: {
+    itemId: string;
+    quantity: number;
+    serialNumbers?: string[];
+    description: string;
+    sourceContext: 'dispatch' | 'return' | 'warehouse';
+    referenceName?: string;
+    priority?: Incident['priority'];
+  }): Promise<Incident> => {
+    const it = items.find((i) => i.id === data.itemId);
+    if (!it) throw new Error('Artículo no encontrado');
+
+    const code = `INC-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
+    const now = new Date().toISOString();
+    const contextLabel =
+      data.sourceContext === 'dispatch'
+        ? `Salidas / Preparación (${data.referenceName || 'Albarán'})`
+        : data.sourceContext === 'return'
+        ? `Devolución / Entrada (${data.referenceName || 'Control Retorno'})`
+        : `Control Almacén Central`;
+
+    const incident: Incident = {
+      id: `inc-${Date.now()}`,
+      code,
+      itemId: it.id,
+      itemName: it.name,
+      itemCode: it.code,
+      serialNumber: data.serialNumbers && data.serialNumbers.length > 0 ? data.serialNumbers.join(', ') : undefined,
+      description: `[Detectado en ${contextLabel}]: ${data.description}`,
+      status: 'new',
+      priority: data.priority || 'high',
+      detectionDate: now,
+      reportedBy: userProfile?.name || 'Operario de Almacén',
+      estimatedCost: 120,
+      history: [
+        {
+          date: now,
+          user: userProfile?.name || 'Operario de Almacén',
+          action: `Incidencia registrada desde ${contextLabel}`,
+          notes: data.description,
+        },
+      ],
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    setIncidents((prev) => [incident, ...prev]);
+
+    // Update item stock: increment damaged, decrement available (and out if during return)
+    setItems((prev) =>
+      prev.map((item) => {
+        if (item.id !== it.id) return item;
+        const newDamaged = item.damagedQuantity + data.quantity;
+        const newAvail = Math.max(0, item.availableQuantity - data.quantity);
+        const newOut = data.sourceContext === 'return' ? Math.max(0, item.outQuantity - data.quantity) : item.outQuantity;
+        return {
+          ...item,
+          damagedQuantity: newDamaged,
+          availableQuantity: newAvail,
+          outQuantity: newOut,
+          updatedAt: now,
+        };
+      })
+    );
+
+    // Update serialized units to damaged status if serials provided
+    if (data.serialNumbers && data.serialNumbers.length > 0) {
+      setItemUnits((prev) =>
+        prev.map((u) =>
+          data.serialNumbers?.includes(u.serialNumber)
+            ? {
+                ...u,
+                status: 'damaged',
+                locationName: 'Taller Técnico y SAT',
+                incidentNotes: data.description,
+              }
+            : u
+        )
+      );
+    }
+
+    // Register movement
+    await recordMovement({
+      type: 'repair_send',
+      itemId: it.id,
+      itemName: it.name,
+      itemCode: it.code,
+      quantity: data.quantity,
+      sourceLocation: contextLabel,
+      targetLocation: 'Taller Técnico y SAT',
+      reason: `Envío directo a SAT por avería/rotura detectada: ${data.description}`,
+      referenceCode: code,
+    });
+
+    return incident;
+  };
+
   // Seed or Reset to Initial Realistic AV Data
   const seedInitialData = async () => {
     setItems(INITIAL_ITEMS);
@@ -2442,6 +2548,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         registerPurchase,
         updatePurchaseDeliveryNote,
         reportDamageFromPurchase,
+        reportDamageDirectly,
 
         createInventorySession,
         saveInventoryCount,

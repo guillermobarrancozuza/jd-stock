@@ -13,6 +13,7 @@ import {
 import { ReturnNote, ReturnCondition } from '../../types/inventory.ts';
 import { useInventory } from '../../context/InventoryContext.tsx';
 import { useAuth } from '../../context/AuthContext.tsx';
+import { DirectDamageReportModal } from '../maintenance/DirectDamageReportModal.tsx';
 
 interface ReturnsViewProps {
   initialEventId?: string | null;
@@ -27,6 +28,7 @@ export const ReturnsView: React.FC<ReturnsViewProps> = ({
   const { userProfile, canAuthorizeDispatches } = useAuth();
 
   const [isModalOpen, setIsModalOpen] = useState(Boolean(initialEventId));
+  const [isDamageModalOpen, setIsDamageModalOpen] = useState(false);
   const [selectedEventId, setSelectedEventId] = useState(
     initialEventId ||
       events.filter((e) => ['dispatched', 'pending_return', 'in_progress'].includes(e.status))[0]?.id ||
@@ -138,13 +140,24 @@ export const ReturnsView: React.FC<ReturnsViewProps> = ({
           </p>
         </div>
 
-        <button
-          onClick={() => handleOpenReturnModal()}
-          className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition shadow-lg shadow-emerald-600/20 cursor-pointer"
-        >
-          <RotateCcw className="w-4 h-4" />
-          <span>Registrar Devolución</span>
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setIsDamageModalOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/30 text-xs font-bold transition shadow-xs cursor-pointer"
+            title="Reportar material roto directamente a Averías / SAT desde recepción"
+          >
+            <Wrench className="w-4 h-4 text-rose-400" />
+            <span>Reportar Avería a SAT</span>
+          </button>
+
+          <button
+            onClick={() => handleOpenReturnModal()}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition shadow-lg shadow-emerald-600/20 cursor-pointer"
+          >
+            <RotateCcw className="w-4 h-4" />
+            <span>Registrar Devolución</span>
+          </button>
+        </div>
       </div>
 
       {/* Overdue Alerts Card if any (Section 10) */}
@@ -541,6 +554,14 @@ export const ReturnsView: React.FC<ReturnsViewProps> = ({
           </div>
         </div>
       )}
+
+      {/* Direct Damage Report Modal to SAT */}
+      <DirectDamageReportModal
+        isOpen={isDamageModalOpen}
+        onClose={() => setIsDamageModalOpen(false)}
+        sourceContext="return"
+        referenceName={selectedEvent ? selectedEvent.name : 'Recepción Devoluciones'}
+      />
     </div>
   );
 };
