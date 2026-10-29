@@ -1,0 +1,313 @@
+{
+  "entities": {
+    "Item": {
+      "title": "Item",
+      "description": "Referencia de material audiovisual en el inventario",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "code": { "type": "string" },
+        "name": { "type": "string" },
+        "category": { "type": "string" },
+        "subcategory": { "type": "string" },
+        "brand": { "type": "string" },
+        "model": { "type": "string" },
+        "description": { "type": "string" },
+        "imageUrl": { "type": "string" },
+        "unit": { "type": "string" },
+        "hasSerialNumbers": { "type": "boolean" },
+        "totalQuantity": { "type": "number" },
+        "availableQuantity": { "type": "number" },
+        "reservedQuantity": { "type": "number" },
+        "outQuantity": { "type": "number" },
+        "damagedQuantity": { "type": "number" },
+        "defaultLocationId": { "type": "string" },
+        "defaultLocationName": { "type": "string" },
+        "supplier": { "type": "string" },
+        "purchasePrice": { "type": "number" },
+        "acquisitionDate": { "type": "string" },
+        "status": { "type": "string" },
+        "minStock": { "type": "number" },
+        "notes": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "code", "name", "category", "totalQuantity", "status"]
+    },
+    "ItemUnit": {
+      "title": "ItemUnit",
+      "description": "Unidad física individual con número de serie o código QR",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "itemId": { "type": "string" },
+        "itemCode": { "type": "string" },
+        "serialNumber": { "type": "string" },
+        "qrCode": { "type": "string" },
+        "locationId": { "type": "string" },
+        "locationName": { "type": "string" },
+        "status": { "type": "string" },
+        "notes": { "type": "string" },
+        "currentEventId": { "type": "string" },
+        "currentEventName": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "itemId", "itemCode", "serialNumber", "status"]
+    },
+    "Category": {
+      "title": "Category",
+      "description": "Categoría de material de sonido, iluminación, vídeo y rigging",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "icon": { "type": "string" },
+        "itemCount": { "type": "number" }
+      },
+      "required": ["id", "name"]
+    },
+    "Location": {
+      "title": "Location",
+      "description": "Ubicación en almacén o nave técnica",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "warehouse": { "type": "string" },
+        "zone": { "type": "string" },
+        "description": { "type": "string" },
+        "isRepairZone": { "type": "boolean" }
+      },
+      "required": ["id", "warehouse", "zone"]
+    },
+    "Event": {
+      "title": "Event",
+      "description": "Evento, festival, concierto o alquiler de material",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "code": { "type": "string" },
+        "name": { "type": "string" },
+        "clientId": { "type": "string" },
+        "clientName": { "type": "string" },
+        "location": { "type": "string" },
+        "dispatchDate": { "type": "string" },
+        "eventDate": { "type": "string" },
+        "returnDate": { "type": "string" },
+        "manager": { "type": "string" },
+        "status": { "type": "string" },
+        "notes": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "code", "name", "dispatchDate", "returnDate", "status"]
+    },
+    "EventItem": {
+      "title": "EventItem",
+      "description": "Línea de material asignada o reservada para un evento",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "eventId": { "type": "string" },
+        "itemId": { "type": "string" },
+        "itemName": { "type": "string" },
+        "itemCode": { "type": "string" },
+        "quantityRequested": { "type": "number" },
+        "quantityDispatched": { "type": "number" },
+        "quantityReturned": { "type": "number" },
+        "quantityDamaged": { "type": "number" },
+        "status": { "type": "string" }
+      },
+      "required": ["id", "eventId", "itemId", "quantityRequested", "status"]
+    },
+    "Movement": {
+      "title": "Movement",
+      "description": "Registro inmutable de trazabilidad de movimiento de inventario",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "type": { "type": "string" },
+        "itemId": { "type": "string" },
+        "itemName": { "type": "string" },
+        "itemCode": { "type": "string" },
+        "quantity": { "type": "number" },
+        "sourceLocation": { "type": "string" },
+        "targetLocation": { "type": "string" },
+        "userId": { "type": "string" },
+        "userName": { "type": "string" },
+        "eventId": { "type": "string" },
+        "eventName": { "type": "string" },
+        "reason": { "type": "string" },
+        "notes": { "type": "string" },
+        "referenceCode": { "type": "string" }
+      },
+      "required": ["id", "timestamp", "type", "itemId", "quantity", "userId"]
+    },
+    "Incident": {
+      "title": "Incident",
+      "description": "Incidencia de equipo averiado o en reparación técnica",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "code": { "type": "string" },
+        "itemId": { "type": "string" },
+        "itemName": { "type": "string" },
+        "unitId": { "type": "string" },
+        "serialNumber": { "type": "string" },
+        "detectionDate": { "type": "string" },
+        "reportedBy": { "type": "string" },
+        "priority": { "type": "string" },
+        "status": { "type": "string" },
+        "description": { "type": "string" },
+        "technician": { "type": "string" },
+        "technicalService": { "type": "string" },
+        "estimatedCost": { "type": "number" },
+        "appliedSolution": { "type": "string" },
+        "sentToRepairDate": { "type": "string" },
+        "returnedDate": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "code", "itemId", "priority", "status", "description"]
+    },
+    "Client": {
+      "title": "Client",
+      "description": "Cliente o productora contratante de eventos",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "taxId": { "type": "string" },
+        "contactPerson": { "type": "string" },
+        "phone": { "type": "string" },
+        "email": { "type": "string" },
+        "address": { "type": "string" },
+        "notes": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "name"]
+    },
+    "Supplier": {
+      "title": "Supplier",
+      "description": "Proveedor o fabricante de equipos y consumibles",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "taxId": { "type": "string" },
+        "contactPerson": { "type": "string" },
+        "phone": { "type": "string" },
+        "email": { "type": "string" },
+        "address": { "type": "string" },
+        "suppliedCategories": { "type": "string" },
+        "notes": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "name"]
+    },
+    "Purchase": {
+      "title": "Purchase",
+      "description": "Entrada y compra de material con recepción",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "orderNumber": { "type": "string" },
+        "supplierId": { "type": "string" },
+        "supplierName": { "type": "string" },
+        "date": { "type": "string" },
+        "totalAmount": { "type": "number" },
+        "targetLocation": { "type": "string" },
+        "responsibleUser": { "type": "string" },
+        "notes": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "orderNumber", "supplierName", "date"]
+    },
+    "InventorySession": {
+      "title": "InventorySession",
+      "description": "Sesión de recuento físico y regularización de almacén",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "code": { "type": "string" },
+        "warehouse": { "type": "string" },
+        "status": { "type": "string" },
+        "startedBy": { "type": "string" },
+        "approvedBy": { "type": "string" },
+        "startDate": { "type": "string" },
+        "completionDate": { "type": "string" }
+      },
+      "required": ["id", "code", "warehouse", "status", "startedBy", "startDate"]
+    },
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Perfil y rol de usuario del sistema",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "email": { "type": "string" },
+        "name": { "type": "string" },
+        "role": { "type": "string" },
+        "avatar": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "email", "name", "role"]
+    }
+  },
+  "firestore": {
+    "/items/{itemId}": {
+      "schema": { "$ref": "#/entities/Item" },
+      "description": "Colección de referencias de catálogo y stock global"
+    },
+    "/itemUnits/{unitId}": {
+      "schema": { "$ref": "#/entities/ItemUnit" },
+      "description": "Unidades físicas individuales con número de serie"
+    },
+    "/categories/{categoryId}": {
+      "schema": { "$ref": "#/entities/Category" },
+      "description": "Colección de categorías configurables de sonido e iluminación"
+    },
+    "/locations/{locationId}": {
+      "schema": { "$ref": "#/entities/Location" },
+      "description": "Almacenes y ubicaciones de almacenamiento"
+    },
+    "/events/{eventId}": {
+      "schema": { "$ref": "#/entities/Event" },
+      "description": "Eventos y reservas de producción"
+    },
+    "/eventItems/{eventItemId}": {
+      "schema": { "$ref": "#/entities/EventItem" },
+      "description": "Líneas de material solicitadas por evento"
+    },
+    "/movements/{movementId}": {
+      "schema": { "$ref": "#/entities/Movement" },
+      "description": "Historial inmutable de movimientos y auditoría"
+    },
+    "/incidents/{incidentId}": {
+      "schema": { "$ref": "#/entities/Incident" },
+      "description": "Averías y partes de servicio técnico/mantenimiento"
+    },
+    "/clients/{clientId}": {
+      "schema": { "$ref": "#/entities/Client" },
+      "description": "Fichero de clientes y productoras"
+    },
+    "/suppliers/{supplierId}": {
+      "schema": { "$ref": "#/entities/Supplier" },
+      "description": "Fichero de proveedores técnicos"
+    },
+    "/purchases/{purchaseId}": {
+      "schema": { "$ref": "#/entities/Purchase" },
+      "description": "Albaranes y compras de material"
+    },
+    "/inventorySessions/{sessionId}": {
+      "schema": { "$ref": "#/entities/InventorySession" },
+      "description": "Sesiones de auditoría de inventario físico"
+    },
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Usuarios del sistema con roles y permisos"
+    }
+  }
+}

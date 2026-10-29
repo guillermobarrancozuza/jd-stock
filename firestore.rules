@@ -1,0 +1,122 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // Default catch-all denies everything
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Test connection doc
+    match /test/{docId} {
+      allow read, write: if true;
+    }
+
+    // User profiles
+    match /users/{userId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn();
+    }
+
+    // Items & Catalog
+    match /items/{itemId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn();
+    }
+
+    // Physical Serialized Units
+    match /itemUnits/{unitId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn();
+    }
+
+    // Categories
+    match /categories/{categoryId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn();
+    }
+
+    // Locations / Warehouses
+    match /locations/{locationId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn();
+    }
+
+    // Events and Reservations
+    match /events/{eventId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn();
+    }
+
+    // Event Items
+    match /eventItems/{eventItemId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn();
+    }
+
+    // Immutable Movements Audit Log
+    match /movements/{movementId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn();
+      // Movements are strictly immutable - no deletes or updates
+      allow update, delete: if false;
+    }
+
+    // Incidents and Technical Repairs
+    match /incidents/{incidentId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn();
+    }
+
+    // Clients
+    match /clients/{clientId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn();
+    }
+
+    // Suppliers
+    match /suppliers/{supplierId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn();
+    }
+
+    // Purchases and Incoming Goods
+    match /purchases/{purchaseId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn();
+    }
+
+    // Inventory Sessions
+    match /inventorySessions/{sessionId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn();
+    }
+
+    // Contracts & Reservations
+    match /contracts/{contractId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn();
+    }
+
+    // Dispatches and Picking Slips
+    match /dispatches/{dispatchId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn();
+    }
+
+    // System Config & Master Auth
+    match /system_config/{configId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn();
+    }
+  }
+}
+

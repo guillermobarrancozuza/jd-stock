@@ -1,0 +1,6 @@
+{
+  "name": "JD Control de Stock",
+  "description": "Sistema integral de gestión de inventario, almacén, trazabilidad de stock, movimientos y eventos.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
