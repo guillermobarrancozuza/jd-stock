@@ -10,8 +10,10 @@ import {
   CreditCard,
   FileText,
   Building,
+  Plus,
+  Trash2,
 } from 'lucide-react';
-import { Contract, ContractStatus } from '../../types/inventory.ts';
+import { Contract, ContractItem, ContractStatus, CONTRACT_SECTIONS } from '../../types/inventory.ts';
 import { useInventory } from '../../context/InventoryContext.tsx';
 
 interface EditContractModalProps {
@@ -40,6 +42,7 @@ export const EditContractModal: React.FC<EditContractModalProps> = ({
   const [depositAmount, setDepositAmount] = useState<number>(0);
   const [status, setStatus] = useState<ContractStatus>('draft');
   const [notes, setNotes] = useState('');
+  const [contractItems, setContractItems] = useState<ContractItem[]>([]);
 
   const [savedSuccess, setSavedSuccess] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -70,15 +73,68 @@ export const EditContractModal: React.FC<EditContractModalProps> = ({
       setDepositAmount(contract.depositAmount || 0);
       setStatus(contract.status || 'draft');
       setNotes(contract.notes || '');
+      setContractItems(
+        (contract.items || []).map((it) => ({
+          ...it,
+          section: it.section || 'Sonido',
+          days: it.days || 1,
+        }))
+      );
     }
   }, [contract, isOpen]);
 
   if (!isOpen || !contract) return null;
 
+  const recalcFromLines = (lines: ContractItem[]) => {
+    const sub = lines.reduce(
+      (acc, l) => acc + (Number(l.quantity) || 0) * (Number(l.unitPrice) || 0) * (Number(l.days) || 1),
+      0
+    );
+    const taxRate = contract.taxRate ?? 21;
+    const tot = Number((sub * (1 + taxRate / 100)).toFixed(2));
+    const depRate = contract.depositRate ?? 10;
+    setTotalAmount(tot);
+    setDepositAmount(Number(((tot * depRate) / 100).toFixed(2)));
+  };
+
+  const handleUpdateLine = (idx: number, patch: Partial<ContractItem>) => {
+    const next = contractItems.map((line, i) => {
+      if (i !== idx) return line;
+      const merged = { ...line, ...patch };
+      merged.totalPrice =
+        (Number(merged.quantity) || 1) * (Number(merged.unitPrice) || 0) * (Number(merged.days) || 1);
+      return merged;
+    });
+    setContractItems(next);
+    recalcFromLines(next);
+  };
+
+  const handleAddLine = () => {
+    const next: ContractItem[] = [
+      ...contractItems,
+      {
+        id: `ci-${Date.now()}`,
+        section: 'Sonido',
+        itemName: '',
+        quantity: 1,
+        unitPrice: 0,
+        days: 1,
+        totalPrice: 0,
+      },
+    ];
+    setContractItems(next);
+  };
+
+  const handleRemoveLine = (idx: number) => {
+    const next = contractItems.filter((_, i) => i !== idx);
+    setContractItems(next);
+    recalcFromLines(next);
+  };
+
   const handleTotalChange = (val: number) => {
     setTotalAmount(val);
-    // Auto calculate 10% deposit
-    setDepositAmount(Number((val * 0.1).toFixed(2)));
+    const depRate = contract.depositRate ?? 10;
+    setDepositAmount(Number(((val * depRate) / 100).toFixed(2)));
   };
 
   const handleSave = async (e: React.FormEvent) => {
@@ -87,6 +143,10 @@ export const EditContractModal: React.FC<EditContractModalProps> = ({
 
     try {
       const remainingAmount = Number((totalAmount - depositAmount).toFixed(2));
+      const cleanItems = contractItems.filter((it) => it.itemName.trim());
+      const taxRate = contract.taxRate ?? 21;
+      const subtotal = Number((totalAmount / (1 + taxRate / 100)).toFixed(2));
+      const taxAmount = Number((totalAmount - subtotal).toFixed(2));
 
       await saveContract({
         ...contract,
@@ -99,6 +159,9 @@ export const EditContractModal: React.FC<EditContractModalProps> = ({
         clientPhone: clientPhone.trim(),
         clientEmail: clientEmail.trim(),
         clientAddress: clientAddress.trim(),
+        items: cleanItems.length > 0 ? cleanItems : contract.items,
+        subtotal,
+        taxAmount,
         totalAmount,
         depositAmount,
         remainingAmount,
@@ -295,6 +358,70 @@ export const EditContractModal: React.FC<EditContractModalProps> = ({
                   className="w-full bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-2 text-white text-xs focus:outline-none focus:border-amber-500"
                 />
               </div>
+            </div>
+          </div>
+
+          {/* Section 2b: Editable Contract Lines / Apartados */}
+          <div className="space-y-2.5">
+            <div className="flex items-center justify-between border-b border-[#30363d] pb-1.5">
+              <span className="font-bold text-amber-400 uppercase text-[11px] tracking-wider">
+                Partidas y Apartados del Contrato ({contractItems.length})
+              </span>
+              <button
+                type="button"
+                onClick={handleAddLine}
+                className="flex items-center gap-1 px-2 py-0.5 rounded bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 text-[11px] font-bold cursor-pointer"
+              >
+                <Plus className="w-3 h-3" /> Añadir Partida
+              </button>
+            </div>
+            <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+              {contractItems.map((line, idx) => (
+                <div key={line.id || idx} className="flex flex-wrap sm:flex-nowrap items-center gap-1.5 bg-[#0d1117] p-2 rounded-lg border border-[#30363d]">
+                  <select
+                    value={line.section || 'Sonido'}
+                    onChange={(e) => handleUpdateLine(idx, { section: e.target.value })}
+                    className="bg-[#161b22] border border-cyan-500/40 rounded px-1.5 py-1 text-[10px] font-bold text-cyan-300"
+                  >
+                    {CONTRACT_SECTIONS.map((sec) => (
+                      <option key={sec} value={sec}>
+                        {sec}
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    type="text"
+                    value={line.itemName}
+                    onChange={(e) => handleUpdateLine(idx, { itemName: e.target.value })}
+                    placeholder="Concepto libre..."
+                    className="flex-1 min-w-[140px] bg-[#161b22] border border-[#30363d] rounded px-2 py-1 text-white text-xs"
+                  />
+                  <input
+                    type="number"
+                    min="1"
+                    value={line.quantity}
+                    onChange={(e) => handleUpdateLine(idx, { quantity: Number(e.target.value) || 1 })}
+                    className="w-12 bg-[#161b22] border border-[#30363d] rounded px-1.5 py-1 text-center font-mono text-white text-xs"
+                    title="Cantidad"
+                  />
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.5"
+                    value={line.unitPrice}
+                    onChange={(e) => handleUpdateLine(idx, { unitPrice: Number(e.target.value) || 0 })}
+                    className="w-16 bg-[#161b22] border border-[#30363d] rounded px-1.5 py-1 text-right font-mono text-emerald-300 text-xs"
+                    title="Precio €/día"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => handleRemoveLine(idx)}
+                    className="p-1 text-zinc-500 hover:text-rose-400 cursor-pointer"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              ))}
             </div>
           </div>
 

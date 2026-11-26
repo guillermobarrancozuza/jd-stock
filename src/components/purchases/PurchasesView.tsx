@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   ShoppingCart,
   Plus,
@@ -24,9 +24,10 @@ import {
 import { Purchase, PurchaseLine } from '../../types/inventory.ts';
 import { useInventory } from '../../context/InventoryContext.tsx';
 import { useAuth } from '../../context/AuthContext.tsx';
+import { findUnitOrItemByCode } from '../../lib/qrScannerUtils.ts';
 
 export const PurchasesView: React.FC = () => {
-  const { purchases, items, suppliers, locations, registerPurchase, updatePurchaseDeliveryNote, reportDamageFromPurchase } = useInventory();
+  const { purchases, items, itemUnits, equipmentKits, cableBoxes, contracts, suppliers, locations, registerPurchase, updatePurchaseDeliveryNote, reportDamageFromPurchase } = useInventory();
   const { userProfile, canManagePurchases } = useAuth();
 
   // Create Purchase Modal State
@@ -51,6 +52,60 @@ export const PurchasesView: React.FC = () => {
   ]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [mobileScanBanner, setMobileScanBanner] = useState<string | null>(null);
+
+  // Receive live scans from user's linked mobile QR scanner directly into Compras / Albarán de Entrada
+  useEffect(() => {
+    const onRemoteQrScan = (event: Event) => {
+      const custom = event as CustomEvent<{ code?: string }>;
+      const code = custom.detail?.code;
+      if (!code) return;
+
+      const match = findUnitOrItemByCode(
+        code,
+        itemUnits,
+        items,
+        equipmentKits,
+        cableBoxes,
+        contracts
+      );
+      const targetItem = match.item || items.find((i) => i.id === match.unit?.itemId);
+      if (!targetItem) return;
+
+      event.preventDefault();
+      setIsModalOpen(true);
+      setLines((prev) => {
+        const idx = prev.findIndex((l) => l.itemId === targetItem.id);
+        if (idx >= 0) {
+          const copy = [...prev];
+          const nextQty = copy[idx].quantity + 1;
+          copy[idx] = {
+            ...copy[idx],
+            quantity: nextQty,
+            totalPrice: nextQty * copy[idx].unitPrice,
+          };
+          return copy;
+        }
+        return [
+          ...prev,
+          {
+            itemId: targetItem.id,
+            itemName: targetItem.name,
+            itemCode: targetItem.code,
+            quantity: 1,
+            unitPrice: targetItem.purchasePrice || 0,
+            totalPrice: targetItem.purchasePrice || 0,
+          },
+        ];
+      });
+
+      setMobileScanBanner(`📱 Añadido a recepción desde tu móvil: ${targetItem.name} (+1)`);
+      setTimeout(() => setMobileScanBanner(null), 4000);
+    };
+
+    window.addEventListener('jd-remote-qr-scan', onRemoteQrScan);
+    return () => window.removeEventListener('jd-remote-qr-scan', onRemoteQrScan);
+  }, [items, itemUnits, equipmentKits, cableBoxes, contracts]);
 
   // Delivery Note Inspection Modal State
   const [inspectingPurchase, setInspectingPurchase] = useState<Purchase | null>(null);
@@ -431,6 +486,12 @@ export const PurchasesView: React.FC = () => {
                   </select>
                 </div>
               </div>
+
+              {mobileScanBanner && (
+                <div className="p-3 rounded-xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-xs font-bold">
+                  {mobileScanBanner}
+                </div>
+              )}
 
               {/* Delivery Note Section (Foto del Albarán de Llegada) */}
               <div className="p-4 rounded-xl bg-[#0d1117] border border-[#30363d] space-y-3">

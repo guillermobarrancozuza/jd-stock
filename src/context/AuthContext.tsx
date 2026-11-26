@@ -1,34 +1,116 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { User, onAuthStateChanged, signInWithPopup, signOut } from 'firebase/auth';
+import {
+  User,
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  updateProfile,
+  updatePassword,
+  signOut,
+} from 'firebase/auth';
 import {
   doc,
   getDoc,
   setDoc,
   updateDoc,
+  deleteDoc,
   collection,
   onSnapshot,
 } from 'firebase/firestore';
-import { auth, googleAuthProvider, db } from '../lib/firebase.ts';
+import { auth, db, getSecondaryAuth } from '../lib/firebase.ts';
 import { UserProfile, UserRole } from '../types/inventory.ts';
-import { INITIAL_USERS } from '../lib/initialData.ts';
+
+export const DEFAULT_ADMIN_EMAIL = 'admin@jdcontrol.es';
+export const DEFAULT_ADMIN_LOGIN = 'admin';
+export const OWNER_ADMIN_EMAIL = 'guillermo.barranco.zuza@gmail.com';
+export const INTERNAL_USER_DOMAIN = 'jdcontrol.app';
+
+/**
+ * Converts either a plain username (e.g. "carlos", "admin") or a full email
+ * into the canonical email used by Firebase Email/Password authentication.
+ */
+export function normalizeIdentifier(usernameOrEmail: string): {
+  authEmail: string;
+  username: string;
+} {
+  const raw = usernameOrEmail.trim().toLowerCase();
+  if (raw.includes('@')) {
+    return {
+      authEmail: raw,
+      username: raw.split('@')[0],
+    };
+  }
+  const cleanUser = raw.replace(/[^a-z0-9._-]/g, '');
+  if (cleanUser === 'admin' || cleanUser === 'jefe') {
+    return {
+      authEmail: DEFAULT_ADMIN_EMAIL,
+      username: 'admin',
+    };
+  }
+  return {
+    authEmail: `${cleanUser}@${INTERNAL_USER_DOMAIN}`,
+    username: cleanUser,
+  };
+}
+
+function mapFirebaseAuthError(err: any): string {
+  const code = err?.code || '';
+  switch (code) {
+    case 'auth/invalid-credential':
+    case 'auth/wrong-password':
+    case 'auth/user-not-found':
+      return 'Usuario o contraseña incorrectos.';
+    case 'auth/email-already-in-use':
+      return 'Ese nombre de usuario o correo ya está registrado. Prueba a iniciar sesión o elige otro usuario.';
+    case 'auth/invalid-email':
+      return 'El usuario o correo no tiene un formato válido (usa letras, números, punto o guion).';
+    case 'auth/weak-password':
+      return 'La contraseña debe tener al menos 6 caracteres.';
+    case 'auth/too-many-requests':
+      return 'Demasiados intentos fallidos. Espera unos minutos e inténtalo de nuevo.';
+    case 'auth/requires-recent-login':
+      return 'Por seguridad, cierra sesión y vuelve a entrar antes de cambiar tu contraseña.';
+    case 'auth/operation-not-allowed':
+    case 'auth/configuration-not-found':
+      return 'El proveedor "Correo electrónico/contraseña" aún no está activado en Firebase Console (Authentication → Sign-in method → Correo electrónico/contraseña → Habilitar).';
+    default:
+      return err?.message || 'Error de autenticación. Inténtalo de nuevo.';
+  }
+}
 
 interface AuthContextType {
   currentUser: User | null;
   userProfile: UserProfile | null;
   isAuthenticated: boolean;
   loading: boolean;
-  loginWithGoogle: () => Promise<void>;
-  loginWithDirectGoogleProfile: (email: string, name: string) => Promise<void>;
-  loginWithCredentials: (usernameOrEmail: string, pass: string) => Promise<{ success: boolean; error?: string }>;
-  loginWithAdminCredentials: (usernameOrEmail: string, pass: string) => Promise<{ success: boolean; error?: string }>;
+  loginWithCredentials: (
+    usernameOrEmail: string,
+    pass: string
+  ) => Promise<{ success: boolean; error?: string }>;
+  loginWithAdminCredentials: (
+    usernameOrEmail: string,
+    pass: string
+  ) => Promise<{ success: boolean; error?: string }>;
+  registerWithCredentials: (
+    name: string,
+    usernameOrEmail: string,
+    pass: string
+  ) => Promise<{ success: boolean; error?: string; role?: UserRole }>;
   logout: () => Promise<void>;
+  createRegisteredUser: (
+    usernameOrEmail: string,
+    name: string,
+    password: string,
+    role: UserRole
+  ) => Promise<UserProfile>;
   updateUserRole: (userId: string, newRole: UserRole) => Promise<void>;
-  updateAdminPassword: (newPassword: string) => Promise<void>;
-  adminMasterPassword: string;
+  deleteUser: (userId: string) => Promise<void>;
+  updateOwnPassword: (newPassword: string) => Promise<void>;
   allUsers: UserProfile[];
   isAdmin: boolean;
   isWarehouseManager: boolean;
   isTechnician: boolean;
+  isPending: boolean;
   canViewContracts: boolean;
   canViewFinancials: boolean;
   canManageInventory: boolean;
@@ -41,293 +123,265 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-export const DEFAULT_ADMIN_EMAIL = 'admin@jdcontrol.es';
-export const DEFAULT_ADMIN_LOGIN = 'admin';
-export const INITIAL_ADMIN_PASSWORD = 'JDAdmin2026*';
-
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
-    return localStorage.getItem('jd_session_authenticated') === 'true';
-  });
-
-  const [adminMasterPassword, setAdminMasterPassword] = useState<string>(() => {
-    return localStorage.getItem('jd_admin_master_password') || INITIAL_ADMIN_PASSWORD;
-  });
-
-  const [allUsers, setAllUsers] = useState<UserProfile[]>(() => {
-    const saved = localStorage.getItem('jd_all_users');
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch {
-        // fallback
-      }
-    }
-    return INITIAL_USERS;
-  });
-
-  const [userProfile, setUserProfile] = useState<UserProfile | null>(() => {
-    const isAuth = localStorage.getItem('jd_session_authenticated') === 'true';
-    if (!isAuth) return null;
-
-    const saved = localStorage.getItem('prompt_maestro_profile');
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch {
-        // ignore
-      }
-    }
-    return INITIAL_USERS[0];
-  });
-
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+  const [allUsers, setAllUsers] = useState<UserProfile[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Sync users in real-time from Firestore collection('users')
+  const isAuthenticated = Boolean(currentUser);
+
+  // Listen to Firebase Auth state & subscribe to the signed-in user's own profile in real time
   useEffect(() => {
-    try {
-      const usersColRef = collection(db, 'users');
-      const unsubscribe = onSnapshot(
-        usersColRef,
-        (snapshot) => {
-          if (!snapshot.empty) {
-            const firestoreUsers: UserProfile[] = [];
-            snapshot.forEach((docSnap) => {
-              const data = docSnap.data() as UserProfile;
-              firestoreUsers.push({
-                ...data,
-                id: docSnap.id,
-              });
-            });
+    let unsubOwnProfile: (() => void) | undefined;
 
-            // Merge with default initial users if not present in Firestore
-            const merged = [...firestoreUsers];
-            INITIAL_USERS.forEach((initU) => {
-              if (!merged.some((m) => m.email.toLowerCase() === initU.email.toLowerCase() || m.id === initU.id)) {
-                merged.push(initU);
+    const unsubAuth = onAuthStateChanged(auth, async (user) => {
+      if (unsubOwnProfile) {
+        unsubOwnProfile();
+        unsubOwnProfile = undefined;
+      }
+
+      setCurrentUser(user);
+
+      if (!user) {
+        setUserProfile(null);
+        setAllUsers([]);
+        setLoading(false);
+        return;
+      }
+
+      const userEmailLower = (user.email || '').toLowerCase().trim();
+      const isOwnerAdmin = userEmailLower === OWNER_ADMIN_EMAIL;
+      const userDocRef = doc(db, 'users', user.uid);
+
+      // Ensure user profile exists in Firestore
+      try {
+        const snap = await getDoc(userDocRef);
+        if (!snap.exists()) {
+          let grantBootstrapAdmin = isOwnerAdmin;
+
+          // If this is the first-ever "admin" registration and no bootstrap lock exists yet, claim it atomically
+          if (!grantBootstrapAdmin && userEmailLower === DEFAULT_ADMIN_EMAIL) {
+            try {
+              const bootstrapRef = doc(db, 'system_config', 'bootstrap');
+              const bSnap = await getDoc(bootstrapRef);
+              if (!bSnap.exists()) {
+                await setDoc(bootstrapRef, {
+                  adminUid: user.uid,
+                  email: userEmailLower,
+                  claimedAt: new Date().toISOString(),
+                });
+                grantBootstrapAdmin = true;
+              } else if (bSnap.data()?.adminUid === user.uid) {
+                grantBootstrapAdmin = true;
               }
-            });
-
-            setAllUsers(merged);
-            localStorage.setItem('jd_all_users', JSON.stringify(merged));
-          } else {
-            setAllUsers(INITIAL_USERS);
+            } catch {
+              // Bootstrap already claimed by another UID
+            }
           }
+
+          const nowIso = new Date().toISOString();
+          const newProfile: UserProfile = {
+            id: user.uid,
+            username: userEmailLower.split('@')[0],
+            email: userEmailLower,
+            name: user.displayName || userEmailLower.split('@')[0] || 'Usuario',
+            role: grantBootstrapAdmin ? 'admin' : 'pending',
+            status: grantBootstrapAdmin ? 'active' : 'pending',
+            provider: 'password',
+            lastLogin: nowIso,
+            assignedBy: grantBootstrapAdmin
+              ? 'Administrador Jefe (Configuración Inicial)'
+              : 'Registro de Usuario — Pendiente de Aprobación',
+            createdAt: nowIso,
+            updatedAt: nowIso,
+          };
+
+          await setDoc(userDocRef, newProfile);
+          setUserProfile(newProfile);
+        } else {
+          const data = snap.data() as UserProfile;
+          const resolvedRole: UserRole = isOwnerAdmin ? 'admin' : (data.role || 'pending');
+          const resolvedStatus: UserProfile['status'] =
+            resolvedRole === 'pending' ? 'pending' : (data.status || 'active');
+
+          setUserProfile({
+            ...data,
+            id: user.uid,
+            role: resolvedRole,
+            status: resolvedStatus,
+          });
+
+          try {
+            await updateDoc(userDocRef, {
+              lastLogin: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+            });
+          } catch {
+            // Non-fatal if offline
+          }
+        }
+      } catch (err) {
+        console.warn('Error loading user profile:', err);
+        setUserProfile({
+          id: user.uid,
+          username: userEmailLower.split('@')[0],
+          email: userEmailLower,
+          name: user.displayName || userEmailLower.split('@')[0],
+          role: isOwnerAdmin ? 'admin' : 'pending',
+          status: isOwnerAdmin ? 'active' : 'pending',
+          provider: 'password',
+          createdAt: new Date().toISOString(),
+        });
+      }
+
+      // Real-time subscription to own profile: unlocks PendingApprovalView the instant Chief Admin assigns a role
+      unsubOwnProfile = onSnapshot(
+        userDocRef,
+        (docSnap) => {
+          if (docSnap.exists()) {
+            const data = docSnap.data() as UserProfile;
+            const resolvedRole: UserRole = isOwnerAdmin ? 'admin' : (data.role || 'pending');
+            setUserProfile({
+              ...data,
+              id: docSnap.id,
+              role: resolvedRole,
+              status: resolvedRole === 'pending' ? 'pending' : (data.status || 'active'),
+            });
+          }
+          setLoading(false);
         },
         (error) => {
-          console.warn('Firestore users subscription notice:', error.message);
+          console.warn('Own profile listener notice:', error.message);
+          setLoading(false);
         }
       );
+    });
 
-      return () => unsubscribe();
-    } catch (err) {
-      console.warn('Error setting up Firestore users listener:', err);
-    }
+    return () => {
+      unsubAuth();
+      if (unsubOwnProfile) unsubOwnProfile();
+    };
   }, []);
 
-  // Listen for Google Auth changes
+  const rawRole = (userProfile?.role || 'pending') as string;
+  const role: UserRole = rawRole === 'viewer' ? 'technician' : (rawRole as UserRole);
+
+  const isPending = Boolean(isAuthenticated && (role === 'pending' || userProfile?.status === 'pending'));
+  const isAdmin = Boolean(isAuthenticated && !isPending && role === 'admin');
+  const isWarehouseManager = Boolean(isAuthenticated && !isPending && role === 'warehouse_manager');
+  const isTechnician = Boolean(isAuthenticated && !isPending && role === 'technician');
+
+  // Sync full users directory ONLY when Chief Admin is signed in
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (user) => {
-      setCurrentUser(user);
-      if (user) {
-        try {
-          const userDocRef = doc(db, 'users', user.uid);
-          const snap = await getDoc(userDocRef);
-          const userEmailLower = user.email?.toLowerCase() || '';
-          const isChiefAdmin =
-            userEmailLower === DEFAULT_ADMIN_EMAIL.toLowerCase() ||
-            userEmailLower === 'guillermo.barranco.zuza@gmail.com' ||
-            userEmailLower.includes('barranco') ||
-            userEmailLower.includes('admin') ||
-            userEmailLower.endsWith('@jdcontrol.es');
+    if (!isAdmin) {
+      setAllUsers([]);
+      return;
+    }
 
-          if (snap.exists()) {
-            const data = snap.data() as UserProfile;
-            const updated: UserProfile = {
-              ...data,
-              role: isChiefAdmin ? 'admin' : (data.role || 'technician'),
-              status: isChiefAdmin ? 'active' : (data.status || 'active'),
-              lastLogin: new Date().toISOString(),
-              avatar: user.photoURL || data.avatar,
-            };
-            setUserProfile(updated);
-            setIsAuthenticated(true);
-            localStorage.setItem('prompt_maestro_profile', JSON.stringify(updated));
-            localStorage.setItem('jd_session_authenticated', 'true');
-            try {
-              await updateDoc(userDocRef, {
-                role: updated.role,
-                status: updated.status,
-                lastLogin: updated.lastLogin,
-                avatar: updated.avatar,
-              });
-            } catch {
-              // ignore
-            }
-          } else {
-            // New user registered via Google:
-            const newProfile: UserProfile = {
-              id: user.uid,
-              email: user.email || 'usuario@empresa-av.com',
-              name: user.displayName || user.email?.split('@')[0] || 'Personal Almacén',
-              role: isChiefAdmin ? 'admin' : 'technician',
-              avatar: user.photoURL || undefined,
-              provider: 'google',
-              status: 'active',
-              lastLogin: new Date().toISOString(),
-              assignedBy: 'Autenticación Google Verificada',
-              createdAt: new Date().toISOString(),
-            };
-            await setDoc(userDocRef, newProfile);
-            setUserProfile(newProfile);
-            setIsAuthenticated(true);
-            localStorage.setItem('prompt_maestro_profile', JSON.stringify(newProfile));
-            localStorage.setItem('jd_session_authenticated', 'true');
-
-            setAllUsers((prev) => {
-              const updated = [newProfile, ...prev.filter((u) => u.id !== newProfile.id && u.email !== newProfile.email)];
-              localStorage.setItem('jd_all_users', JSON.stringify(updated));
-              return updated;
-            });
-          }
-        } catch (err) {
-          console.warn('Error syncing user profile from Firestore:', err);
-        }
+    const usersColRef = collection(db, 'users');
+    const unsubscribe = onSnapshot(
+      usersColRef,
+      (snapshot) => {
+        const firestoreUsers: UserProfile[] = [];
+        snapshot.forEach((docSnap) => {
+          const data = docSnap.data() as UserProfile;
+          firestoreUsers.push({
+            ...data,
+            id: docSnap.id,
+          });
+        });
+        firestoreUsers.sort((a, b) => {
+          if (a.role === 'pending' && b.role !== 'pending') return -1;
+          if (b.role === 'pending' && a.role !== 'pending') return 1;
+          return (b.createdAt || '').localeCompare(a.createdAt || '');
+        });
+        setAllUsers(firestoreUsers);
+      },
+      (error) => {
+        console.warn('Firestore users list notice:', error.message);
       }
-      setLoading(false);
-    });
+    );
 
     return () => unsubscribe();
-  }, []);
+  }, [isAdmin]);
 
-  // Login with Google (Universal: any employee, client or technician with Google account)
-  const loginWithGoogle = async () => {
-    try {
-      await signInWithPopup(auth, googleAuthProvider);
-      setIsAuthenticated(true);
-      localStorage.setItem('jd_session_authenticated', 'true');
-    } catch (err: any) {
-      console.error('Google Sign-In failed:', err);
-      // If popup was blocked or in restrictive iframe
-      if (
-        err?.code === 'auth/popup-blocked' ||
-        err?.code === 'auth/popup-closed-by-user' ||
-        err?.code === 'auth/unauthorized-domain' ||
-        err?.code === 'auth/cancelled-popup-request' ||
-        err?.message?.includes('popup')
-      ) {
-        throw new Error(
-          'La ventana emergente de Google ha sido bloqueada en este entorno. Usa "Acceso Directo con Cuenta Google" para acceder de inmediato con cualquier cuenta.'
-        );
-      }
-      throw err;
-    }
-  };
-
-  // Direct 1-click login for any staff member or worker with Google account
-  const loginWithDirectGoogleProfile = async (email: string, name: string) => {
-    const isChiefAdmin =
-      email.toLowerCase() === DEFAULT_ADMIN_EMAIL.toLowerCase() ||
-      email.toLowerCase().includes('admin') ||
-      email.toLowerCase().includes('barranco') ||
-      email.toLowerCase().endsWith('@jdcontrol.es');
-
-    const profile: UserProfile = {
-      id: `usr-google-${Date.now()}`,
-      email: email.trim(),
-      name: name.trim() || email.split('@')[0],
-      role: isChiefAdmin ? 'admin' : 'technician',
-      provider: 'google',
-      status: 'active',
-      lastLogin: new Date().toISOString(),
-      assignedBy: 'Autenticación Google Verificada',
-      createdAt: new Date().toISOString(),
-    };
-
-    setUserProfile(profile);
-    setIsAuthenticated(true);
-    localStorage.setItem('prompt_maestro_profile', JSON.stringify(profile));
-    localStorage.setItem('jd_session_authenticated', 'true');
-
-    setAllUsers((prev) => {
-      const exists = prev.some((u) => u.email.toLowerCase() === email.toLowerCase());
-      if (exists) return prev;
-      const updated = [profile, ...prev];
-      localStorage.setItem('jd_all_users', JSON.stringify(updated));
-      return updated;
-    });
-  };
-
-  // Chief Admin Credentials Login
+  // Sign in with username or email + password
+  // Note: Chief Admin ("admin") signs in directly here without needing "Crear Cuenta".
+  // On the very first login before admin@jdcontrol.es exists in Firebase Auth, it initializes
+  // the Firebase Auth account + one-time /system_config/bootstrap lock automatically.
   const loginWithCredentials = async (
     usernameOrEmail: string,
     pass: string
   ): Promise<{ success: boolean; error?: string }> => {
-    const cleanUser = usernameOrEmail.trim().toLowerCase();
-    const cleanPass = pass.trim();
-
-    // 1. Verify Chief Administrator
-    const isChiefAdmin =
-      cleanUser === DEFAULT_ADMIN_LOGIN.toLowerCase() ||
-      cleanUser === 'jefe';
-
-    if (isChiefAdmin) {
-      if (cleanPass !== adminMasterPassword) {
-        return { success: false, error: 'Contraseña de Administrador Jefe incorrecta.' };
-      }
-
-      const adminProfile: UserProfile = {
-        id: 'usr-admin-master',
-        email: DEFAULT_ADMIN_EMAIL,
-        name: 'Administrador Jefe',
-        role: 'admin',
-        provider: 'admin_credentials',
-        status: 'active',
-        lastLogin: new Date().toISOString(),
-        assignedBy: 'Autenticación Maestra Única',
-        createdAt: '2026-01-01T00:00:00Z',
-      };
-
-      setUserProfile(adminProfile);
-      setIsAuthenticated(true);
-      localStorage.setItem('prompt_maestro_profile', JSON.stringify(adminProfile));
-      localStorage.setItem('jd_session_authenticated', 'true');
-      localStorage.setItem('jd_admin_session_active', 'true');
-
-      return { success: true };
+    const trimmed = usernameOrEmail.trim();
+    if (!trimmed) {
+      return { success: false, error: 'Introduce tu usuario o correo electrónico.' };
+    }
+    if (!pass) {
+      return { success: false, error: 'Introduce tu contraseña.' };
     }
 
-    // 2. Check registered staff
-    const foundUser = allUsers.find(
-      (u) => u.email.toLowerCase() === cleanUser || u.name.toLowerCase().includes(cleanUser)
-    );
+    const { authEmail, username } = normalizeIdentifier(trimmed);
 
-    if (foundUser) {
-      if (foundUser.role === 'pending') {
-        return {
-          success: false,
-          error: 'Tu cuenta está pendiente de que el Administrador Jefe te asigne un rol. Inicia sesión con Google para comprobar tu estado.',
-        };
-      }
-      const updatedUser: UserProfile = {
-        ...foundUser,
-        lastLogin: new Date().toISOString(),
-      };
-      setUserProfile(updatedUser);
-      setIsAuthenticated(true);
-      localStorage.setItem('prompt_maestro_profile', JSON.stringify(updatedUser));
-      localStorage.setItem('jd_session_authenticated', 'true');
+    try {
+      await signInWithEmailAndPassword(auth, authEmail, pass);
       return { success: true };
-    }
+    } catch (err: any) {
+      const code = err?.code || '';
+      const isAdminFirstRunCandidate =
+        authEmail === DEFAULT_ADMIN_EMAIL &&
+        (code === 'auth/user-not-found' || code === 'auth/invalid-credential');
 
-    return {
-      success: false,
-      error: 'El acceso por usuario y contraseña es exclusivo para el Administrador Jefe ("admin"). El resto del personal debe iniciar sesión con Google.',
-    };
+      if (isAdminFirstRunCandidate && pass.length >= 6) {
+        try {
+          const cred = await createUserWithEmailAndPassword(auth, DEFAULT_ADMIN_EMAIL, pass);
+          await updateProfile(cred.user, { displayName: 'Administrador Jefe' });
+
+          const nowIso = new Date().toISOString();
+          try {
+            const bootstrapRef = doc(db, 'system_config', 'bootstrap');
+            const bSnap = await getDoc(bootstrapRef);
+            if (!bSnap.exists()) {
+              await setDoc(bootstrapRef, {
+                adminUid: cred.user.uid,
+                email: DEFAULT_ADMIN_EMAIL,
+                claimedAt: nowIso,
+              });
+            }
+          } catch {
+            // Bootstrap already claimed
+          }
+
+          const adminProfile: UserProfile = {
+            id: cred.user.uid,
+            username: username || 'admin',
+            email: DEFAULT_ADMIN_EMAIL,
+            name: 'Administrador Jefe',
+            role: 'admin',
+            status: 'active',
+            provider: 'admin_credentials',
+            lastLogin: nowIso,
+            assignedBy: 'Administrador Jefe (Único)',
+            createdAt: nowIso,
+            updatedAt: nowIso,
+          };
+          await setDoc(doc(db, 'users', cred.user.uid), adminProfile, { merge: true });
+          setUserProfile(adminProfile);
+          return { success: true };
+        } catch (createErr: any) {
+          // If admin@jdcontrol.es already exists in Firebase Auth, the password was simply wrong
+          if (createErr?.code === 'auth/email-already-in-use') {
+            return { success: false, error: 'Contraseña de Administrador incorrecta.' };
+          }
+          return { success: false, error: mapFirebaseAuthError(createErr) };
+        }
+      }
+
+      return { success: false, error: mapFirebaseAuthError(err) };
+    }
   };
 
-  // Helper alias for admin credentials
   const loginWithAdminCredentials = async (
     usernameOrEmail: string,
     pass: string
@@ -335,22 +389,134 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return loginWithCredentials(usernameOrEmail, pass);
   };
 
-  // Logout (both Google & credentials)
+  // Worker self-registration ONLY: creates a real Firebase Auth account with role='pending' until Chief Admin approves
+  const registerWithCredentials = async (
+    name: string,
+    usernameOrEmail: string,
+    pass: string
+  ): Promise<{ success: boolean; error?: string; role?: UserRole }> => {
+    const cleanName = name.trim();
+    const { authEmail, username } = normalizeIdentifier(usernameOrEmail);
+
+    if (cleanName.length < 2) {
+      return { success: false, error: 'Introduce tu nombre y apellidos.' };
+    }
+    if (username.length < 3) {
+      return {
+        success: false,
+        error: 'El nombre de usuario debe tener al menos 3 caracteres (letras o números).',
+      };
+    }
+    if (
+      username === 'admin' ||
+      username === 'jefe' ||
+      authEmail === DEFAULT_ADMIN_EMAIL
+    ) {
+      return {
+        success: false,
+        error:
+          'El usuario "admin" está reservado exclusivamente para el Administrador Jefe. Entra desde "Iniciar Sesión" o elige otro nombre de usuario.',
+      };
+    }
+    if (pass.length < 6) {
+      return { success: false, error: 'La contraseña debe tener al menos 6 caracteres.' };
+    }
+
+    try {
+      const cred = await createUserWithEmailAndPassword(auth, authEmail, pass);
+      await updateProfile(cred.user, { displayName: cleanName });
+
+      const isOwner = authEmail === OWNER_ADMIN_EMAIL;
+      const assignedRole: UserRole = isOwner ? 'admin' : 'pending';
+      const nowIso = new Date().toISOString();
+      const newProfile: UserProfile = {
+        id: cred.user.uid,
+        username,
+        email: authEmail,
+        name: cleanName,
+        role: assignedRole,
+        status: isOwner ? 'active' : 'pending',
+        provider: 'password',
+        lastLogin: nowIso,
+        assignedBy: isOwner
+          ? 'Administrador Jefe'
+          : 'Registro de Usuario — Pendiente de Aprobación',
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      };
+
+      await setDoc(doc(db, 'users', cred.user.uid), newProfile);
+      setUserProfile(newProfile);
+
+      return { success: true, role: assignedRole };
+    } catch (err: any) {
+      return { success: false, error: mapFirebaseAuthError(err) };
+    }
+  };
+
+  // Sign out cleanly
   const logout = async () => {
     try {
-      if (currentUser) {
-        await signOut(auth);
-      }
+      await signOut(auth);
     } catch (err) {
       console.error('Logout error:', err);
     } finally {
-      localStorage.removeItem('prompt_maestro_profile');
-      localStorage.removeItem('jd_admin_session_active');
-      localStorage.removeItem('jd_session_authenticated');
       setCurrentUser(null);
       setUserProfile(null);
-      setIsAuthenticated(false);
+      setAllUsers([]);
     }
+  };
+
+  // Chief Admin creates a new worker account with username + password + assigned role without logging out
+  const createRegisteredUser = async (
+    usernameOrEmail: string,
+    name: string,
+    password: string,
+    assignedRole: UserRole
+  ): Promise<UserProfile> => {
+    if (!isAdmin) {
+      throw new Error('Solo el Administrador Jefe puede dar de alta usuarios.');
+    }
+    const cleanName = name.trim();
+    const { authEmail, username } = normalizeIdentifier(usernameOrEmail);
+
+    if (username.length < 3) {
+      throw new Error('El nombre de usuario debe tener al menos 3 caracteres.');
+    }
+    if (!cleanName) {
+      throw new Error('Introduce el nombre y apellidos del trabajador.');
+    }
+    if (password.length < 6) {
+      throw new Error('La contraseña inicial debe tener al menos 6 caracteres.');
+    }
+
+    const secondaryAuth = getSecondaryAuth();
+    let newUid: string;
+    try {
+      const cred = await createUserWithEmailAndPassword(secondaryAuth, authEmail, password);
+      await updateProfile(cred.user, { displayName: cleanName });
+      newUid = cred.user.uid;
+      await signOut(secondaryAuth);
+    } catch (err: any) {
+      throw new Error(mapFirebaseAuthError(err));
+    }
+
+    const nowIso = new Date().toISOString();
+    const newUser: UserProfile = {
+      id: newUid,
+      username,
+      email: authEmail,
+      name: cleanName,
+      role: assignedRole,
+      provider: 'password',
+      status: assignedRole === 'pending' ? 'pending' : 'active',
+      assignedBy: userProfile?.name || 'Administrador Jefe',
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    };
+
+    await setDoc(doc(db, 'users', newUid), newUser);
+    return newUser;
   };
 
   // Only Chief Admin can assign/change roles to people
@@ -359,77 +525,54 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       throw new Error('Solo el Administrador Jefe tiene permisos para asignar o modificar roles.');
     }
 
-    // Update in local state
-    setAllUsers((prev) => {
-      const updated = prev.map((u) => {
-        if (u.id === userId) {
-          return {
-            ...u,
-            role: newRole,
-            assignedBy: userProfile?.name || 'Administrador Jefe',
-          };
-        }
-        return u;
-      });
-      localStorage.setItem('jd_all_users', JSON.stringify(updated));
-      return updated;
-    });
+    const newStatus: UserProfile['status'] = newRole === 'pending' ? 'pending' : 'active';
+    const existing = allUsers.find((u) => u.id === userId);
+    const nowIso = new Date().toISOString();
 
-    // If updating current active user, update userProfile too
-    if (userProfile && userProfile.id === userId) {
-      const updated = { ...userProfile, role: newRole };
-      setUserProfile(updated);
-      localStorage.setItem('prompt_maestro_profile', JSON.stringify(updated));
-    }
-
-    // Persist to Firestore
-    try {
-      const userRef = doc(db, 'users', userId);
-      await updateDoc(userRef, {
+    const userRef = doc(db, 'users', userId);
+    await setDoc(
+      userRef,
+      {
+        id: userId,
+        email: existing?.email || '',
+        name: existing?.name || 'Usuario',
+        createdAt: existing?.createdAt || nowIso,
         role: newRole,
+        status: newStatus,
         assignedBy: userProfile?.name || 'Administrador Jefe',
-        updatedAt: new Date().toISOString(),
-      });
-    } catch (err) {
-      console.warn('Could not persist role to Firestore:', err);
-    }
+        updatedAt: nowIso,
+      },
+      { merge: true }
+    );
   };
 
-  // Chief Admin can update the unique master password
-  const updateAdminPassword = async (newPassword: string) => {
+  // Only Chief Admin can delete registered users
+  const deleteUser = async (userId: string) => {
     if (!isAdmin) {
-      throw new Error('Solo el Administrador Jefe puede modificar la contraseña maestra.');
+      throw new Error('Solo el Administrador Jefe puede eliminar usuarios.');
+    }
+    if (userProfile?.id === userId) {
+      throw new Error('No puedes eliminar tu propia sesión activa.');
+    }
+
+    await deleteDoc(doc(db, 'users', userId));
+  };
+
+  // Update the currently signed-in user's password via Firebase Auth
+  const updateOwnPassword = async (newPassword: string) => {
+    if (!auth.currentUser) {
+      throw new Error('Debes iniciar sesión para cambiar tu contraseña.');
     }
     const clean = newPassword.trim();
     if (clean.length < 6) {
       throw new Error('La contraseña debe tener al menos 6 caracteres.');
     }
-
-    setAdminMasterPassword(clean);
-    localStorage.setItem('jd_admin_master_password', clean);
-
     try {
-      const configRef = doc(db, 'system_config', 'admin_auth');
-      await setDoc(
-        configRef,
-        {
-          masterPassword: clean,
-          updatedAt: new Date().toISOString(),
-          updatedBy: userProfile?.email || DEFAULT_ADMIN_EMAIL,
-        },
-        { merge: true }
-      );
-    } catch (err) {
-      console.warn('Could not persist admin password to Firestore:', err);
+      await updatePassword(auth.currentUser, clean);
+    } catch (err: any) {
+      throw new Error(mapFirebaseAuthError(err));
     }
   };
-
-  const rawRole = (userProfile?.role || 'technician') as string;
-  const role: UserRole = rawRole === 'viewer' ? 'technician' : (rawRole as UserRole);
-
-  const isAdmin = Boolean(isAuthenticated && role === 'admin');
-  const isWarehouseManager = Boolean(isAuthenticated && role === 'warehouse_manager');
-  const isTechnician = Boolean(isAuthenticated && role === 'technician');
 
   // Strict role boundaries: Only administrators see contracts, reservations and economic metrics
   const canViewContracts = isAdmin;
@@ -439,8 +582,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const canManagePurchases = isAdmin || isWarehouseManager;
   const canManageInventory = isAdmin || isWarehouseManager;
   const canAuthorizeDispatches = isAdmin || isWarehouseManager || isTechnician;
-  const canEditIncidents = true;
-  const isReadOnly = false;
+  const canEditIncidents = !isPending && isAuthenticated;
+  const isReadOnly = isPending;
 
   return (
     <AuthContext.Provider
@@ -449,18 +592,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         userProfile,
         isAuthenticated,
         loading,
-        loginWithGoogle,
-        loginWithDirectGoogleProfile,
         loginWithCredentials,
         loginWithAdminCredentials,
+        registerWithCredentials,
         logout,
+        createRegisteredUser,
         updateUserRole,
-        updateAdminPassword,
-        adminMasterPassword,
+        deleteUser,
+        updateOwnPassword,
         allUsers,
         isAdmin,
         isWarehouseManager,
         isTechnician,
+        isPending,
         canViewContracts,
         canViewFinancials,
         canManageInventory,

@@ -7,7 +7,76 @@ service cloud.firestore {
     }
 
     function isValidId(id) {
-      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isBootstrapAdminEmail() {
+      return isSignedIn() && request.auth.token.email == 'guillermo.barranco.zuza@gmail.com';
+    }
+
+    function isBootstrappedAdmin() {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/system_config/bootstrap)
+        && get(/databases/$(database)/documents/system_config/bootstrap).data.adminUid == request.auth.uid;
+    }
+
+    function hasUserProfile() {
+      return isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function currentUserRole() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        isBootstrapAdminEmail()
+        || isBootstrappedAdmin()
+        || (hasUserProfile() && currentUserRole() == 'admin')
+      );
+    }
+
+    // Pending users cannot read or write ANY operational collection until Chief Admin assigns an active role
+    function isApprovedUser() {
+      return isSignedIn() && (
+        isAdmin()
+        || (hasUserProfile() && currentUserRole() in ['admin', 'warehouse_manager', 'technician'])
+      );
+    }
+
+    function isValidUserDoc(data) {
+      return data.keys().hasAll(['id', 'email', 'name', 'role', 'status', 'createdAt'])
+        && data.keys().hasOnly([
+          'id', 'username', 'email', 'name', 'role', 'avatar',
+          'provider', 'status', 'lastLogin', 'assignedBy', 'createdAt', 'updatedAt'
+        ])
+        && data.id is string && data.id.size() > 0 && data.id.size() <= 128
+        && data.email is string && data.email.size() > 0 && data.email.size() <= 200
+        && data.name is string && data.name.size() > 0 && data.name.size() <= 120
+        && data.role in ['admin', 'warehouse_manager', 'technician', 'pending']
+        && data.status in ['active', 'pending', 'suspended']
+        && data.createdAt is string && data.createdAt.size() <= 64
+        && (!('username' in data) || (data.username is string && data.username.size() <= 64))
+        && (!('provider' in data) || (data.provider is string && data.provider.size() <= 32))
+        && (!('assignedBy' in data) || (data.assignedBy is string && data.assignedBy.size() <= 120));
+    }
+
+    function isValidScannerBridge(data, userId) {
+      return data.keys().hasAll(['userId', 'senderDeviceId', 'updatedAt'])
+        && data.keys().hasOnly([
+          'userId', 'lastCode', 'scanId', 'scannedAt',
+          'senderDeviceId', 'senderName', 'mobileActiveAt', 'updatedAt'
+        ])
+        && data.userId == request.auth.uid
+        && data.userId == userId
+        && data.userId is string && data.userId.size() > 0 && data.userId.size() <= 128
+        && data.senderDeviceId is string && data.senderDeviceId.size() > 0 && data.senderDeviceId.size() <= 128
+        && data.updatedAt is string && data.updatedAt.size() > 0 && data.updatedAt.size() <= 64
+        && (!('lastCode' in data) || (data.lastCode is string && data.lastCode.size() <= 500))
+        && (!('scanId' in data) || (data.scanId is string && data.scanId.size() <= 128))
+        && (!('scannedAt' in data) || (data.scannedAt is number))
+        && (!('senderName' in data) || (data.senderName is string && data.senderName.size() <= 120))
+        && (!('mobileActiveAt' in data) || (data.mobileActiveAt is number));
     }
 
     // Default catch-all denies everything
@@ -17,106 +86,146 @@ service cloud.firestore {
 
     // Test connection doc
     match /test/{docId} {
-      allow read, write: if true;
+      allow read: if true;
+      allow write: if false;
     }
 
-    // User profiles
+    // First-run atomic Chief Admin bootstrap lock (strictly reserved for admin@jdcontrol.es, once only)
+    match /system_config/bootstrap {
+      allow get: if isSignedIn();
+      allow list: if false;
+      allow create: if isSignedIn()
+        && request.auth.token.email == 'admin@jdcontrol.es'
+        && !exists(/databases/$(database)/documents/system_config/bootstrap)
+        && request.resource.data.keys().hasAll(['adminUid', 'email', 'claimedAt'])
+        && request.resource.data.keys().hasOnly(['adminUid', 'email', 'claimedAt'])
+        && request.resource.data.adminUid == request.auth.uid
+        && request.resource.data.email == 'admin@jdcontrol.es'
+        && request.resource.data.claimedAt is string && request.resource.data.claimedAt.size() <= 64;
+      allow update, delete: if false;
+    }
+
+    // System Config (Fiscal, Backup, etc.)
+    match /system_config/{configId} {
+      allow read: if isApprovedUser() && isValidId(configId);
+      allow write: if isAdmin() && isValidId(configId) && configId != 'bootstrap';
+    }
+
+    // User profiles — self-registration strictly forced to role='pending' unless Chief Admin
     match /users/{userId} {
-      allow read: if isSignedIn();
-      allow write: if isSignedIn();
+      allow get: if isSignedIn() && isValidId(userId) && (request.auth.uid == userId || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isSignedIn() && isValidId(userId) && isValidUserDoc(request.resource.data) && (
+        isAdmin()
+        || (
+          request.auth.uid == userId
+          && request.resource.data.id == request.auth.uid
+          && (
+            (request.resource.data.role == 'pending' && request.resource.data.status == 'pending')
+            || ((isBootstrapAdminEmail() || isBootstrappedAdmin()) && request.resource.data.role == 'admin' && request.resource.data.status == 'active')
+          )
+        )
+      );
+      allow update: if isSignedIn() && isValidId(userId) && isValidUserDoc(request.resource.data) && (
+        isAdmin()
+        || (
+          request.auth.uid == userId
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'lastLogin', 'updatedAt'])
+        )
+      );
+      allow delete: if isAdmin() && isValidId(userId) && userId != request.auth.uid;
     }
 
     // Items & Catalog
     match /items/{itemId} {
-      allow read: if isSignedIn();
-      allow write: if isSignedIn();
+      allow read, write: if isApprovedUser();
     }
 
     // Physical Serialized Units
     match /itemUnits/{unitId} {
-      allow read: if isSignedIn();
-      allow write: if isSignedIn();
+      allow read, write: if isApprovedUser();
     }
 
     // Categories
     match /categories/{categoryId} {
-      allow read: if isSignedIn();
-      allow write: if isSignedIn();
+      allow read, write: if isApprovedUser();
     }
 
     // Locations / Warehouses
     match /locations/{locationId} {
-      allow read: if isSignedIn();
-      allow write: if isSignedIn();
+      allow read, write: if isApprovedUser();
     }
 
     // Events and Reservations
     match /events/{eventId} {
-      allow read: if isSignedIn();
-      allow write: if isSignedIn();
+      allow read, write: if isApprovedUser();
     }
 
     // Event Items
     match /eventItems/{eventItemId} {
-      allow read: if isSignedIn();
-      allow write: if isSignedIn();
+      allow read, write: if isApprovedUser();
     }
 
     // Immutable Movements Audit Log
     match /movements/{movementId} {
-      allow read: if isSignedIn();
-      allow create: if isSignedIn();
-      // Movements are strictly immutable - no deletes or updates
+      allow read, create: if isApprovedUser();
       allow update, delete: if false;
     }
 
     // Incidents and Technical Repairs
     match /incidents/{incidentId} {
-      allow read: if isSignedIn();
-      allow write: if isSignedIn();
+      allow read, write: if isApprovedUser();
     }
 
     // Clients
     match /clients/{clientId} {
-      allow read: if isSignedIn();
-      allow write: if isSignedIn();
+      allow read, write: if isApprovedUser();
     }
 
     // Suppliers
     match /suppliers/{supplierId} {
-      allow read: if isSignedIn();
-      allow write: if isSignedIn();
+      allow read, write: if isApprovedUser();
     }
 
     // Purchases and Incoming Goods
     match /purchases/{purchaseId} {
-      allow read: if isSignedIn();
-      allow write: if isSignedIn();
+      allow read, write: if isApprovedUser();
     }
 
     // Inventory Sessions
     match /inventorySessions/{sessionId} {
-      allow read: if isSignedIn();
-      allow write: if isSignedIn();
+      allow read, write: if isApprovedUser();
     }
 
-    // Contracts & Reservations
+    // Contracts & Reservations — Strictly Chief Admin only
     match /contracts/{contractId} {
-      allow read: if isSignedIn();
-      allow write: if isSignedIn();
+      allow read, write: if isAdmin();
     }
 
     // Dispatches and Picking Slips
     match /dispatches/{dispatchId} {
-      allow read: if isSignedIn();
-      allow write: if isSignedIn();
+      allow read, write: if isApprovedUser();
     }
 
-    // System Config & Master Auth
-    match /system_config/{configId} {
-      allow read: if isSignedIn();
-      allow write: if isSignedIn();
+    // Composite Equipment Kits (Carros / Racks con QR conjunto)
+    match /equipmentKits/{kitId} {
+      allow read, write: if isApprovedUser();
+    }
+
+    // Cable Boxes with QR & Breakage/Loss tracking
+    match /cableBoxes/{boxId} {
+      allow read, write: if isApprovedUser();
+    }
+
+    // Real-time Private Phone-to-PC QR Scanner Bridge (Strictly owner-only per authenticated UID)
+    match /scanner_bridge/{userId} {
+      allow get: if isApprovedUser() && isValidId(userId) && request.auth.uid == userId;
+      allow list: if false;
+      allow create, update: if isApprovedUser()
+        && isValidId(userId)
+        && request.auth.uid == userId
+        && isValidScannerBridge(request.resource.data, userId);
+      allow delete: if isApprovedUser() && isValidId(userId) && request.auth.uid == userId;
     }
   }
 }
-

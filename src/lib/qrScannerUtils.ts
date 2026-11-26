@@ -1,5 +1,5 @@
 import jsQR from 'jsqr';
-import { Item, ItemUnit } from '../types/inventory.ts';
+import { Item, ItemUnit, EquipmentKit, CableBox, Contract } from '../types/inventory.ts';
 
 /**
  * Result of matching a scanned QR / barcode string against inventory
@@ -8,9 +8,39 @@ export interface ScannedMatchResult {
   rawText: string;
   unit: ItemUnit | null;
   item: Item | null;
+  kit?: EquipmentKit | null;
+  cableBox?: CableBox | null;
+  contract?: Contract | null;
   serialNumber: string;
   isDirectMatch: boolean;
-  matchType: 'unit_sn' | 'unit_qrcode' | 'item_code' | 'item_qrcode' | 'barcode' | 'raw_text';
+  matchType:
+    | 'unit_sn'
+    | 'unit_qrcode'
+    | 'item_code'
+    | 'item_qrcode'
+    | 'barcode'
+    | 'kit_qrcode'
+    | 'cable_box_qrcode'
+    | 'contract_code'
+    | 'raw_text';
+}
+
+/**
+ * Extract pure QR code if the scanned text is a URL with ?qr=... parameter
+ */
+export function extractQrPayload(rawText: string): string {
+  const trimmed = rawText.trim();
+  if (!trimmed) return '';
+  try {
+    if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+      const url = new URL(trimmed);
+      const qrParam = url.searchParams.get('qr') || url.searchParams.get('code');
+      if (qrParam) return qrParam.trim();
+    }
+  } catch {
+    // not a valid URL, treat as raw code
+  }
+  return trimmed;
 }
 
 /**
@@ -94,16 +124,66 @@ export async function decodeQrFromImage(
 }
 
 /**
- * Searches inventory for a matching unit and item based on the scanned QR code or barcode text
+ * Searches inventory, composite kits, cable boxes, and contracts for a scanned QR or barcode string
  */
 export function findUnitOrItemByCode(
   rawText: string,
   itemUnits: ItemUnit[],
-  items: Item[]
+  items: Item[],
+  equipmentKits: EquipmentKit[] = [],
+  cableBoxes: CableBox[] = [],
+  contracts: Contract[] = []
 ): ScannedMatchResult {
-  const clean = rawText.trim();
+  const clean = extractQrPayload(rawText);
   const upper = clean.toUpperCase();
   const withoutQr = upper.replace(/^QR-/, '').trim();
+
+  // 0a. Match Composite Equipment Kit (Carro / Rack / Pack QR conjunto)
+  const matchedKit = equipmentKits.find(
+    (k) =>
+      k.qrCode.toUpperCase() === upper ||
+      k.code.toUpperCase() === upper ||
+      k.code.toUpperCase() === withoutQr ||
+      k.id === clean
+  );
+  if (matchedKit) {
+    return {
+      rawText: clean,
+      unit: null,
+      item: null,
+      kit: matchedKit,
+      cableBox: null,
+      contract: null,
+      serialNumber: matchedKit.code,
+      isDirectMatch: true,
+      matchType: 'kit_qrcode',
+    };
+  }
+
+  // 0b. Match Cable Box (Caja de cables con QR conjunto)
+  const matchedBox = cableBoxes.find(
+    (b) =>
+      b.qrCode.toUpperCase() === upper ||
+      b.code.toUpperCase() === upper ||
+      b.code.toUpperCase() === withoutQr ||
+      b.id === clean
+  );
+  if (matchedBox) {
+    const linkedItem = matchedBox.linkedItemId
+      ? items.find((i) => i.id === matchedBox.linkedItemId) || null
+      : null;
+    return {
+      rawText: clean,
+      unit: null,
+      item: linkedItem,
+      kit: null,
+      cableBox: matchedBox,
+      contract: null,
+      serialNumber: matchedBox.code,
+      isDirectMatch: true,
+      matchType: 'cable_box_qrcode',
+    };
+  }
 
   // 1. Direct match with ItemUnit serialNumber
   const unitBySn = itemUnits.find(
@@ -163,7 +243,6 @@ export function findUnitOrItemByCode(
       (i.qrCode && i.qrCode.toUpperCase() === upper)
   );
   if (itemByCode) {
-    // Check if there is only 1 unit or find first unit
     const unitsOfItem = itemUnits.filter((u) => u.itemId === itemByCode.id);
     const unit = unitsOfItem.length === 1 ? unitsOfItem[0] : null;
     return {
@@ -191,11 +270,32 @@ export function findUnitOrItemByCode(
     };
   }
 
-  // 6. No direct match found, treat the decoded string as the serial number
+  // 6. Match with Contract code
+  const matchedContract = contracts.find(
+    (c) => c.code.toUpperCase() === upper || c.id === clean
+  );
+  if (matchedContract) {
+    return {
+      rawText: clean,
+      unit: null,
+      item: null,
+      kit: null,
+      cableBox: null,
+      contract: matchedContract,
+      serialNumber: matchedContract.code,
+      isDirectMatch: true,
+      matchType: 'contract_code',
+    };
+  }
+
+  // 7. No direct match found
   return {
     rawText: clean,
     unit: null,
     item: null,
+    kit: null,
+    cableBox: null,
+    contract: null,
     serialNumber: withoutQr || clean,
     isDirectMatch: false,
     matchType: 'raw_text',

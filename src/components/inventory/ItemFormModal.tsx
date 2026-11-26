@@ -32,6 +32,7 @@ export const ItemFormModal: React.FC<ItemFormModalProps> = ({ isOpen, onClose, i
     defaultLocationId: itemToEdit?.defaultLocationId || locations[0]?.id || '',
     supplier: itemToEdit?.supplier || suppliers[0]?.name || '',
     purchasePrice: itemToEdit?.purchasePrice || 0,
+    rentalPrice: itemToEdit?.rentalPrice || 0,
     acquisitionDate: itemToEdit?.acquisitionDate || new Date().toISOString().split('T')[0],
     minStock: itemToEdit?.minStock ?? 2,
     notes: itemToEdit?.notes || '',
@@ -126,6 +127,7 @@ export const ItemFormModal: React.FC<ItemFormModalProps> = ({ isOpen, onClose, i
         defaultLocationName: loc ? `${loc.warehouse} - ${loc.zone}` : 'Nave Central',
         supplier: formData.supplier,
         purchasePrice: Number(formData.purchasePrice),
+        rentalPrice: Number(formData.rentalPrice),
         acquisitionDate: formData.acquisitionDate,
         minStock: Number(formData.minStock),
         notes: formData.notes,
@@ -400,16 +402,18 @@ export const ItemFormModal: React.FC<ItemFormModalProps> = ({ isOpen, onClose, i
             )}
           </div>
 
-          {/* Supplier, Price, Unit */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          {/* Supplier, Rental Price, Purchase Price, Unit */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             <div>
-              <label className="block text-zinc-300 font-semibold mb-1">Proveedor</label>
+              <label className="block text-emerald-400 font-bold mb-1">Precio Alquiler / Trabajo (€)</label>
               <input
-                type="text"
-                value={formData.supplier}
-                onChange={(e) => setFormData({ ...formData, supplier: e.target.value })}
-                placeholder="Earpro, Equipson, Thomann..."
-                className="w-full bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-2 text-zinc-100 focus:outline-none focus:border-amber-500"
+                type="number"
+                min="0"
+                step="0.5"
+                value={formData.rentalPrice}
+                onChange={(e) => setFormData({ ...formData, rentalPrice: Number(e.target.value) })}
+                placeholder="Ej. 45"
+                className="w-full bg-[#0d1117] border border-emerald-500/50 rounded-lg px-3 py-2 text-emerald-300 font-mono font-bold focus:outline-none focus:border-emerald-400"
               />
             </div>
 
@@ -421,6 +425,17 @@ export const ItemFormModal: React.FC<ItemFormModalProps> = ({ isOpen, onClose, i
                 step="0.01"
                 value={formData.purchasePrice}
                 onChange={(e) => setFormData({ ...formData, purchasePrice: Number(e.target.value) })}
+                className="w-full bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-2 text-zinc-100 focus:outline-none focus:border-amber-500"
+              />
+            </div>
+
+            <div>
+              <label className="block text-zinc-300 font-semibold mb-1">Proveedor</label>
+              <input
+                type="text"
+                value={formData.supplier}
+                onChange={(e) => setFormData({ ...formData, supplier: e.target.value })}
+                placeholder="Earpro, Equipson, Thomann..."
                 className="w-full bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-2 text-zinc-100 focus:outline-none focus:border-amber-500"
               />
             </div>

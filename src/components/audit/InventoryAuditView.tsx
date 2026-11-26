@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   ClipboardList,
   Plus,
@@ -13,9 +13,10 @@ import {
 import { InventorySession, InventorySessionLine } from '../../types/inventory.ts';
 import { useInventory } from '../../context/InventoryContext.tsx';
 import { useAuth } from '../../context/AuthContext.tsx';
+import { findUnitOrItemByCode } from '../../lib/qrScannerUtils.ts';
 
 export const InventoryAuditView: React.FC = () => {
-  const { inventorySessions, items, createInventorySession, saveInventoryCount, regularizeInventory } =
+  const { inventorySessions, items, itemUnits, equipmentKits, cableBoxes, contracts, createInventorySession, saveInventoryCount, regularizeInventory } =
     useInventory();
   const { userProfile, canManageInventory } = useAuth();
 
@@ -26,6 +27,49 @@ export const InventoryAuditView: React.FC = () => {
   const [counts, setCounts] = useState<Record<string, { counted: number; reason: string }>>({});
   const [selectedWarehouse, setSelectedWarehouse] = useState('Nave Central');
   const [isStartingNew, setIsStartingNew] = useState(false);
+  const [mobileScanBanner, setMobileScanBanner] = useState<string | null>(null);
+
+  // Receive live scans from user's linked mobile QR scanner during an active physical count
+  useEffect(() => {
+    if (!activeSession || activeSession.status !== 'in_progress') return;
+    const onRemoteQrScan = (event: Event) => {
+      const custom = event as CustomEvent<{ code?: string }>;
+      const code = custom.detail?.code;
+      if (!code) return;
+
+      const match = findUnitOrItemByCode(
+        code,
+        itemUnits,
+        items,
+        equipmentKits,
+        cableBoxes,
+        contracts
+      );
+      const targetItem = match.item || items.find((i) => i.id === match.unit?.itemId);
+      if (!targetItem) return;
+
+      event.preventDefault();
+      setCounts((prev) => {
+        const line = activeSession.lines.find((l) => l.itemId === targetItem.id);
+        const currentCount = prev[targetItem.id]?.counted ?? line?.theoreticalQty ?? 0;
+        const nextCount = currentCount + 1;
+        setMobileScanBanner(
+          `📱 Contado desde móvil: ${targetItem.name} → Total contado: ${nextCount}`
+        );
+        setTimeout(() => setMobileScanBanner(null), 4000);
+        return {
+          ...prev,
+          [targetItem.id]: {
+            counted: nextCount,
+            reason: prev[targetItem.id]?.reason || 'Verificado con escáner móvil QR',
+          },
+        };
+      });
+    };
+
+    window.addEventListener('jd-remote-qr-scan', onRemoteQrScan);
+    return () => window.removeEventListener('jd-remote-qr-scan', onRemoteQrScan);
+  }, [activeSession, items, itemUnits, equipmentKits, cableBoxes, contracts]);
 
   const handleStartSession = async () => {
     const session = await createInventorySession(selectedWarehouse);
@@ -156,6 +200,11 @@ export const InventoryAuditView: React.FC = () => {
       {/* Active Counting Session */}
       {activeSession ? (
         <div className="p-5 rounded-2xl bg-[#161b22] border border-amber-500/50 space-y-4">
+          {mobileScanBanner && (
+            <div className="p-3 rounded-xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-xs font-bold">
+              {mobileScanBanner}
+            </div>
+          )}
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-[#30363d]">
             <div>
               <div className="flex items-center gap-2">

@@ -17,8 +17,9 @@ import {
   RefreshCw,
   Sliders,
   FileSignature,
-  ShieldCheck,
   Camera,
+  Boxes,
+  Building2,
   Smartphone,
 } from 'lucide-react';
 import { useInventory } from '../../context/InventoryContext.tsx';
@@ -29,7 +30,8 @@ interface SidebarProps {
   onNavigate: (view: string) => void;
   onClose?: () => void;
   onOpenScanner?: () => void;
-  onOpenMobileAppModal?: () => void;
+  onOpenRemoteLinkModal?: () => void;
+  isMobileScannerOnline?: boolean;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -37,21 +39,22 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onNavigate,
   onClose,
   onOpenScanner,
-  onOpenMobileAppModal,
+  onOpenRemoteLinkModal,
+  isMobileScannerOnline,
 }) => {
-  const { seedInitialData, events, incidents, items, contracts } = useInventory();
-  const { canManageInventory, canViewContracts, canManageUsers } = useAuth();
+  const { events, incidents, items, contracts, equipmentKits, cableBoxes, isBackupDue } = useInventory();
+  const { isAdmin, allUsers } = useAuth();
 
   const activeIncidents = incidents.filter((i) => i.status !== 'closed' && i.status !== 'repaired').length;
   const activeEvents = events.filter((e) => ['confirmed', 'preparing', 'prepared', 'dispatched', 'pending_return'].includes(e.status)).length;
   const lowStock = items.filter((i) => i.status === 'active' && i.availableQuantity <= i.minStock).length;
   const pendingContracts = contracts.filter((c) => c.status === 'sent' || c.status === 'draft').length;
+  const pendingUsersCount = allUsers.filter((u) => u.role === 'pending' || u.status === 'pending').length;
+  const officeUrgentAlerts = pendingUsersCount + (isBackupDue ? 1 : 0);
+  const kitsAndBoxesTotal = equipmentKits.length + cableBoxes.length;
 
   const operationItems = [
     { id: 'events', label: 'Eventos y Agenda', icon: CalendarCheck, badge: activeEvents > 0 ? `${activeEvents}` : undefined, badgeColor: 'bg-amber-500/20 text-amber-400 border border-amber-500/30' },
-    ...(canViewContracts
-      ? [{ id: 'contracts', label: 'Contratos & Reserva 10%', icon: FileSignature, badge: pendingContracts > 0 ? `${pendingContracts} pend.` : undefined, badgeColor: 'bg-amber-500/20 text-amber-400 border border-amber-500/30' }]
-      : []),
     { id: 'dispatches', label: 'Salidas y Albaranes', icon: Truck },
     { id: 'returns', label: 'Devoluciones y Control', icon: RotateCcw },
     { id: 'maintenance', label: 'Averías y Taller SAT', icon: Wrench, badge: activeIncidents > 0 ? `${activeIncidents}` : undefined, badgeColor: 'bg-rose-500/20 text-rose-400 border border-rose-500/30' },
@@ -66,24 +69,51 @@ export const Sidebar: React.FC<SidebarProps> = ({
           id: 'scanner_action',
           label: 'Escanear QR (Cámara)',
           icon: Camera,
-          badge: 'Móvil',
+          badge: 'Directo',
           badgeColor: 'bg-amber-500/20 text-amber-300 border border-amber-500/40',
           onClick: onOpenScanner,
         },
         {
-          id: 'mobile_action',
-          label: 'Vincular Móvil (PWA)',
+          id: 'remote_scanner_link',
+          label: 'Escanear QR desde Móvil',
           icon: Smartphone,
-          badge: 'Instalar',
-          badgeColor: 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40',
-          onClick: onOpenMobileAppModal,
+          badge: isMobileScannerOnline ? 'En vivo' : 'Enlace',
+          badgeColor: isMobileScannerOnline
+            ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 animate-pulse'
+            : 'bg-cyan-500/15 text-cyan-300 border border-cyan-500/30',
+          onClick: onOpenRemoteLinkModal,
         },
       ],
     },
+    ...(isAdmin
+      ? [
+          {
+            title: 'OFICINA (SOLO ADMIN JEFE)',
+            items: [
+              {
+                id: 'oficina',
+                label: 'Oficina (Gestión Jefe)',
+                icon: Building2,
+                badge:
+                  officeUrgentAlerts > 0
+                    ? `${officeUrgentAlerts} aviso${officeUrgentAlerts > 1 ? 's' : ''}`
+                    : pendingContracts > 0
+                    ? `${pendingContracts} cont.`
+                    : 'Jefe',
+                badgeColor:
+                  officeUrgentAlerts > 0
+                    ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40 animate-pulse'
+                    : 'bg-amber-500/20 text-amber-300 border border-amber-500/30',
+              },
+            ],
+          },
+        ]
+      : []),
     {
       title: 'INVENTARIO',
       items: [
         { id: 'inventory', label: 'Catálogo de Artículos', icon: Package, badge: lowStock > 0 ? `${lowStock} bajo mín.` : undefined, badgeColor: 'bg-orange-500/20 text-orange-400 border border-orange-500/30' },
+        { id: 'kits_cables', label: 'QR Conjuntos y Cables', icon: Boxes, badge: kitsAndBoxesTotal > 0 ? `${kitsAndBoxesTotal}` : undefined, badgeColor: 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30' },
         { id: 'units', label: 'Unidades y N/S', icon: QrCode },
         { id: 'categories', label: 'Categorías de Material', icon: Layers },
         { id: 'locations', label: 'Almacenes y Ubicaciones', icon: MapPin },
@@ -103,23 +133,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
         { id: 'reports', label: 'Informes y Métricas', icon: BarChart3 },
       ],
     },
-    ...(canManageUsers
-      ? [
-          {
-            title: 'ADMINISTRACIÓN (JEFE)',
-            items: [
-              {
-                id: 'users',
-                label: 'Personal & Roles Google',
-                icon: ShieldCheck,
-                badge: 'Admin',
-                badgeColor: 'bg-amber-500/20 text-amber-300 border border-amber-500/30',
-              },
-            ],
-          },
-        ]
-      : []),
   ];
+
+  const isOficinaView = ['oficina', 'contracts', 'users', 'oficina_backup'].includes(currentView);
 
   return (
     <aside className="w-64 bg-[#161b22] border-r border-[#30363d] flex flex-col justify-between h-[calc(100vh-4rem)] sticky top-16 no-print overflow-y-auto">
@@ -132,7 +148,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <div className="space-y-1">
               {group.items.map((item) => {
                 const Icon = item.icon;
-                const isActive = currentView === item.id;
+                const isActive =
+                  item.id === 'oficina' ? isOficinaView : currentView === item.id;
                 return (
                   <button
                     key={item.id}

@@ -26,7 +26,7 @@ interface ImportXlsModalProps {
 }
 
 export const ImportXlsModal: React.FC<ImportXlsModalProps> = ({ isOpen, onClose }) => {
-  const { importItemsFromSpreadsheet } = useInventory();
+  const { items, importItemsFromSpreadsheet } = useInventory();
 
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
@@ -34,11 +34,19 @@ export const ImportXlsModal: React.FC<ImportXlsModalProps> = ({ isOpen, onClose 
   const [parsedRows, setParsedRows] = useState<ParsedItemRow[]>([]);
   const [importedResult, setImportedResult] = useState<{
     imported: number;
+    updated: number;
     unitsCount: number;
     errors: string[];
   } | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const isExistingRow = (row: ParsedItemRow) =>
+    items.some(
+      (it) =>
+        (row.code && it.code.toLowerCase() === row.code.trim().toLowerCase()) ||
+        it.name.toLowerCase() === row.name.trim().toLowerCase()
+    );
 
   if (!isOpen) return null;
 
@@ -81,6 +89,12 @@ export const ImportXlsModal: React.FC<ImportXlsModalProps> = ({ isOpen, onClose 
   const handleGroupChange = (index: number, newGroup: string) => {
     setParsedRows((prev) =>
       prev.map((row, idx) => (idx === index ? { ...row, group: newGroup } : row))
+    );
+  };
+
+  const handleRentalPriceChange = (index: number, price: number) => {
+    setParsedRows((prev) =>
+      prev.map((row, idx) => (idx === index ? { ...row, rentalPrice: Math.max(0, price) } : row))
     );
   };
 
@@ -163,11 +177,11 @@ export const ImportXlsModal: React.FC<ImportXlsModalProps> = ({ isOpen, onClose 
                 <CheckCircle className="w-8 h-8" />
               </div>
               <div>
-                <h3 className="text-lg font-bold text-white">¡Material Importado con Éxito!</h3>
+                <h3 className="text-lg font-bold text-white">¡Catálogo y Precios Sincronizados con Éxito!</h3>
                 <p className="text-zinc-400 text-xs mt-1">
-                  Se han registrado <span className="font-bold text-emerald-400">{importedResult.imported}</span> referencias
-                  en el catálogo y generado <span className="font-bold text-amber-400">{importedResult.unitsCount}</span> unidades
-                  físicas con sus respectivos números de serie y códigos QR.
+                  Se han dado de alta <span className="font-bold text-emerald-400">{importedResult.imported}</span> referencias nuevas,
+                  actualizado <span className="font-bold text-cyan-400">{importedResult.updated}</span> precios/artículos existentes y
+                  generado <span className="font-bold text-amber-400">{importedResult.unitsCount}</span> unidades físicas N/S con QR.
                 </p>
               </div>
 
@@ -260,9 +274,10 @@ export const ImportXlsModal: React.FC<ImportXlsModalProps> = ({ isOpen, onClose 
                     <table className="w-full text-left text-xs">
                       <thead className="bg-[#161b22] text-zinc-400 uppercase font-semibold border-b border-[#30363d] text-[10px] sticky top-0">
                         <tr>
+                          <th className="py-2.5 px-3">Estado</th>
                           <th className="py-2.5 px-3">Grupo AV</th>
                           <th className="py-2.5 px-3">Artículo / Modelo</th>
-                          <th className="py-2.5 px-3">Categoría</th>
+                          <th className="py-2.5 px-3">Alquiler / Trabajo (€)</th>
                           <th className="py-2.5 px-3 text-center">Cant.</th>
                           <th className="py-2.5 px-3">Números de Serie</th>
                           <th className="py-2.5 px-3">Ubicación</th>
@@ -270,67 +285,87 @@ export const ImportXlsModal: React.FC<ImportXlsModalProps> = ({ isOpen, onClose 
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-[#30363d]">
-                        {parsedRows.map((row, idx) => (
-                          <tr key={idx} className="hover:bg-zinc-800/40 transition">
-                            <td className="py-2.5 px-3">
-                              <select
-                                value={row.group}
-                                onChange={(e) => handleGroupChange(idx, e.target.value)}
-                                className="bg-[#161b22] border border-[#30363d] rounded px-2 py-1 text-[11px] font-bold text-amber-400 focus:outline-none focus:border-amber-500"
-                              >
-                                {AV_GROUPS.map((g) => (
-                                  <option key={g} value={g}>
-                                    {g}
-                                  </option>
-                                ))}
-                              </select>
-                            </td>
-                            <td className="py-2.5 px-3">
-                              <div className="font-semibold text-white">{row.name}</div>
-                              <div className="text-[10px] text-zinc-400">
-                                {row.brand} {row.model}
-                              </div>
-                            </td>
-                            <td className="py-2.5 px-3 text-zinc-300">
-                              <span className="px-1.5 py-0.5 rounded bg-zinc-800 text-[10px]">
-                                {row.category}
-                              </span>
-                            </td>
-                            <td className="py-2.5 px-3 text-center font-mono font-bold text-zinc-200">
-                              {row.totalQuantity} <span className="text-[10px] text-zinc-500 font-normal">{row.unit}</span>
-                            </td>
-                            <td className="py-2.5 px-3">
-                              {row.hasSerialNumbers ? (
-                                <div className="space-y-0.5">
-                                  <span className="text-[10px] px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 font-mono font-semibold">
-                                    {row.serialNumbers.length > 0
-                                      ? `${row.serialNumbers.length} N/S definidos`
-                                      : 'Autogenerar N/S'}
-                                  </span>
-                                  {row.serialNumbers.length > 0 && (
-                                    <div className="text-[10px] text-zinc-400 truncate max-w-[150px]">
-                                      {row.serialNumbers.join(', ')}
-                                    </div>
-                                  )}
+                        {parsedRows.map((row, idx) => {
+                          const exists = isExistingRow(row);
+                          return (
+                            <tr key={idx} className="hover:bg-zinc-800/40 transition">
+                              <td className="py-2.5 px-3">
+                                <span
+                                  className={`px-1.5 py-0.5 rounded font-mono text-[10px] font-bold ${
+                                    exists
+                                      ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30'
+                                      : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                                  }`}
+                                >
+                                  {exists ? 'ACTUALIZAR' : 'NUEVO'}
+                                </span>
+                              </td>
+                              <td className="py-2.5 px-3">
+                                <select
+                                  value={row.group}
+                                  onChange={(e) => handleGroupChange(idx, e.target.value)}
+                                  className="bg-[#161b22] border border-[#30363d] rounded px-2 py-1 text-[11px] font-bold text-amber-400 focus:outline-none focus:border-amber-500"
+                                >
+                                  {AV_GROUPS.map((g) => (
+                                    <option key={g} value={g}>
+                                      {g}
+                                    </option>
+                                  ))}
+                                </select>
+                              </td>
+                              <td className="py-2.5 px-3">
+                                <div className="font-semibold text-white">{row.name}</div>
+                                <div className="text-[10px] text-zinc-400">
+                                  {row.code ? `${row.code} · ` : ''}
+                                  {row.brand} {row.model}
                                 </div>
-                              ) : (
-                                <span className="text-zinc-500 text-[11px]">No serializado</span>
-                              )}
-                            </td>
-                            <td className="py-2.5 px-3 text-zinc-400 text-[11px]">
-                              {row.defaultLocationName || 'Nave Central'}
-                            </td>
-                            <td className="py-2.5 px-3 text-right">
-                              <button
-                                onClick={() => handleRemoveRow(idx)}
-                                className="p-1 rounded text-zinc-500 hover:text-rose-400 transition"
-                                title="Eliminar fila de importación"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
+                              </td>
+                              <td className="py-2.5 px-3">
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="0.5"
+                                  value={row.rentalPrice ?? 0}
+                                  onChange={(e) => handleRentalPriceChange(idx, Number(e.target.value))}
+                                  className="w-24 bg-[#161b22] border border-emerald-500/40 rounded px-2 py-1 text-emerald-300 font-mono font-bold text-xs focus:outline-none focus:border-emerald-400"
+                                />
+                              </td>
+                              <td className="py-2.5 px-3 text-center font-mono font-bold text-zinc-200">
+                                {row.totalQuantity} <span className="text-[10px] text-zinc-500 font-normal">{row.unit}</span>
+                              </td>
+                              <td className="py-2.5 px-3">
+                                {row.hasSerialNumbers ? (
+                                  <div className="space-y-0.5">
+                                    <span className="text-[10px] px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 font-mono font-semibold">
+                                      {row.serialNumbers.length > 0
+                                        ? `${row.serialNumbers.length} N/S definidos`
+                                        : 'Autogenerar N/S'}
+                                    </span>
+                                    {row.serialNumbers.length > 0 && (
+                                      <div className="text-[10px] text-zinc-400 truncate max-w-[150px]">
+                                        {row.serialNumbers.join(', ')}
+                                      </div>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <span className="text-zinc-500 text-[11px]">No serializado</span>
+                                )}
+                              </td>
+                              <td className="py-2.5 px-3 text-zinc-400 text-[11px]">
+                                {row.defaultLocationName || 'Nave Central'}
+                              </td>
+                              <td className="py-2.5 px-3 text-right">
+                                <button
+                                  onClick={() => handleRemoveRow(idx)}
+                                  className="p-1 rounded text-zinc-500 hover:text-rose-400 transition"
+                                  title="Eliminar fila de importación"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>

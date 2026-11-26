@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useRef } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import {
   Wrench,
   Plus,
@@ -26,7 +26,7 @@ import { QrPhotoScannerModal } from './QrPhotoScannerModal.tsx';
 import { decodeQrFromImage, findUnitOrItemByCode } from '../../lib/qrScannerUtils.ts';
 
 export const MaintenanceView: React.FC = () => {
-  const { incidents, items, itemUnits, createIncident, updateIncidentStatus, saveItemUnit } = useInventory();
+  const { incidents, items, itemUnits, equipmentKits, cableBoxes, contracts, createIncident, updateIncidentStatus, saveItemUnit } = useInventory();
   const { userProfile, canEditIncidents } = useAuth();
 
   const [statusFilter, setStatusFilter] = useState<string>('all');
@@ -112,6 +112,33 @@ export const MaintenanceView: React.FC = () => {
     setIsAddOpen(true);
     setTimeout(() => setPhotoDetectionBanner(null), 5000);
   };
+
+  // Receive live scans from user's linked mobile QR scanner directly into Taller SAT
+  useEffect(() => {
+    const onRemoteQrScan = (event: Event) => {
+      const custom = event as CustomEvent<{ code?: string }>;
+      const code = custom.detail?.code;
+      if (!code) return;
+      event.preventDefault();
+
+      const match = findUnitOrItemByCode(
+        code,
+        itemUnits,
+        items,
+        equipmentKits,
+        cableBoxes,
+        contracts
+      );
+      handleUnitFromQrScanner({
+        unit: match.unit,
+        item: match.item,
+        serialNumber: match.serialNumber || code,
+      });
+    };
+
+    window.addEventListener('jd-remote-qr-scan', onRemoteQrScan);
+    return () => window.removeEventListener('jd-remote-qr-scan', onRemoteQrScan);
+  }, [items, itemUnits, equipmentKits, cableBoxes, contracts]);
 
   const handleDirectPhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];

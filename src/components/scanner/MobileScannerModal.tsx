@@ -18,15 +18,19 @@ import {
   VolumeX,
   History,
   Layers,
+  Smartphone,
 } from 'lucide-react';
 import { useInventory } from '../../context/InventoryContext.tsx';
-import { Item, ItemUnit } from '../../types/inventory.ts';
+import { Item, ItemUnit, EquipmentKit, CableBox } from '../../types/inventory.ts';
+import { findUnitOrItemByCode, ScannedMatchResult } from '../../lib/qrScannerUtils.ts';
 
 interface MobileScannerModalProps {
   isOpen: boolean;
   onClose: () => void;
   onNavigateToView?: (view: string, filter?: string) => void;
   onSelectScannedItem?: (item: Item, unit?: ItemUnit) => void;
+  onQrResolved?: (result: ScannedMatchResult) => void;
+  onOpenRemoteLinkModal?: () => void;
 }
 
 interface ScanRecord {
@@ -34,8 +38,11 @@ interface ScanRecord {
   timestamp: string;
   item?: Item;
   unit?: ItemUnit;
+  kit?: EquipmentKit;
+  cableBox?: CableBox;
   contractCode?: string;
   isRecognized: boolean;
+  match: ScannedMatchResult;
 }
 
 export const MobileScannerModal: React.FC<MobileScannerModalProps> = ({
@@ -43,8 +50,10 @@ export const MobileScannerModal: React.FC<MobileScannerModalProps> = ({
   onClose,
   onNavigateToView,
   onSelectScannedItem,
+  onQrResolved,
+  onOpenRemoteLinkModal,
 }) => {
-  const { items, itemUnits, contracts } = useInventory();
+  const { items, itemUnits, equipmentKits, cableBoxes, contracts } = useInventory();
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -100,50 +109,25 @@ export const MobileScannerModal: React.FC<MobileScannerModalProps> = ({
   };
 
   const resolveScannedCode = (rawCode: string): ScanRecord => {
-    const trimmed = rawCode.trim();
-    const cleanLookup = trimmed
-      .replace(/^QR-|^BAR-|^ITEM-|^REF-|^UNIT-|^CTR-/i, '')
-      .toUpperCase();
-
-    // 1. Check in physical units (Serial Number / unit QR)
-    const matchedUnit = itemUnits.find(
-      (u: ItemUnit) =>
-        u.serialNumber.toUpperCase() === cleanLookup ||
-        u.serialNumber.toUpperCase() === trimmed.toUpperCase() ||
-        (u.qrCode && u.qrCode.toUpperCase() === trimmed.toUpperCase()) ||
-        u.id === trimmed
-    );
-
-    let matchedItem: Item | undefined;
-    if (matchedUnit) {
-      matchedItem = items.find((it) => it.id === matchedUnit.itemId);
-    } else {
-      // 2. Check in items (by code, barcode, qrCode, or name)
-      matchedItem = items.find(
-        (it) =>
-          it.code.toUpperCase() === cleanLookup ||
-          it.code.toUpperCase() === trimmed.toUpperCase() ||
-          (it.barcode && it.barcode === trimmed) ||
-          (it.qrCode && it.qrCode.toUpperCase() === trimmed.toUpperCase()) ||
-          it.id === trimmed
-      );
-    }
-
-    // 3. Check in contracts
-    const matchedContract = contracts.find(
-      (c) =>
-        c.code.toUpperCase() === cleanLookup ||
-        c.code.toUpperCase() === trimmed.toUpperCase() ||
-        c.id === trimmed
+    const match = findUnitOrItemByCode(
+      rawCode,
+      itemUnits,
+      items,
+      equipmentKits,
+      cableBoxes,
+      contracts
     );
 
     return {
-      code: trimmed,
+      code: match.rawText || rawCode.trim(),
       timestamp: new Date().toLocaleTimeString(),
-      item: matchedItem,
-      unit: matchedUnit,
-      contractCode: matchedContract?.code,
-      isRecognized: !!(matchedItem || matchedUnit || matchedContract),
+      item: match.item || undefined,
+      unit: match.unit || undefined,
+      kit: match.kit || undefined,
+      cableBox: match.cableBox || undefined,
+      contractCode: match.contract?.code,
+      isRecognized: match.isDirectMatch,
+      match,
     };
   };
 
@@ -163,6 +147,11 @@ export const MobileScannerModal: React.FC<MobileScannerModalProps> = ({
     const record = resolveScannedCode(code);
     setLastScannedResult(record);
     setScanHistory((prev) => [record, ...prev.slice(0, 19)]);
+
+    if (onQrResolved) {
+      onQrResolved(record.match);
+      return;
+    }
 
     if (onSelectScannedItem && record.item) {
       onSelectScannedItem(record.item, record.unit);
@@ -473,14 +462,20 @@ export const MobileScannerModal: React.FC<MobileScannerModalProps> = ({
                 <div>
                   <div className="flex items-center gap-2">
                     <span className="font-bold text-white text-xs">
-                      {lastScannedResult.item?.name ||
+                      {lastScannedResult.kit?.name ||
+                        lastScannedResult.cableBox?.name ||
+                        lastScannedResult.item?.name ||
                         (lastScannedResult.contractCode
                           ? `Contrato: ${lastScannedResult.contractCode}`
                           : 'Código Detectado')}
                     </span>
                     {lastScannedResult.isRecognized ? (
                       <span className="px-1.5 py-0.2 bg-emerald-500/20 text-emerald-400 rounded text-[9px] font-bold border border-emerald-500/30">
-                        En Almacén
+                        {lastScannedResult.kit
+                          ? 'QR Conjunto'
+                          : lastScannedResult.cableBox
+                          ? 'Caja Cables'
+                          : 'En Almacén'}
                       </span>
                     ) : (
                       <span className="px-1.5 py-0.2 bg-zinc-700 text-zinc-300 rounded text-[9px]">
@@ -489,7 +484,15 @@ export const MobileScannerModal: React.FC<MobileScannerModalProps> = ({
                     )}
                   </div>
                   <div className="text-[11px] text-zinc-300 font-mono mt-0.5">
-                    {lastScannedResult.unit ? (
+                    {lastScannedResult.kit ? (
+                      <span>
+                        {lastScannedResult.kit.components.map((c) => `${c.quantity}× ${c.name}`).join(', ')}
+                      </span>
+                    ) : lastScannedResult.cableBox ? (
+                      <span>
+                        Cables útiles: <strong className="text-cyan-400">{lastScannedResult.cableBox.currentQuantity}/{lastScannedResult.cableBox.initialQuantity}</strong> • {lastScannedResult.cableBox.cableType}
+                      </span>
+                    ) : lastScannedResult.unit ? (
                       <span>N/S: <strong className="text-amber-400">{lastScannedResult.unit.serialNumber}</strong> • Ubicación: {lastScannedResult.unit.locationName}</span>
                     ) : lastScannedResult.item ? (
                       <span>REF: <strong className="text-amber-400">{lastScannedResult.item.code}</strong> • Disp: {lastScannedResult.item.availableQuantity} {lastScannedResult.item.unit}</span>

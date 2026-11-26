@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   RotateCcw,
   CheckCircle,
@@ -14,6 +14,7 @@ import { ReturnNote, ReturnCondition } from '../../types/inventory.ts';
 import { useInventory } from '../../context/InventoryContext.tsx';
 import { useAuth } from '../../context/AuthContext.tsx';
 import { DirectDamageReportModal } from '../maintenance/DirectDamageReportModal.tsx';
+import { findUnitOrItemByCode } from '../../lib/qrScannerUtils.ts';
 
 interface ReturnsViewProps {
   initialEventId?: string | null;
@@ -24,7 +25,7 @@ export const ReturnsView: React.FC<ReturnsViewProps> = ({
   initialEventId,
   onClearInitialEvent,
 }) => {
-  const { events, eventItems, items, itemUnits, returns, processReturn } = useInventory();
+  const { events, eventItems, items, itemUnits, equipmentKits, cableBoxes, contracts, returns, processReturn } = useInventory();
   const { userProfile, canAuthorizeDispatches } = useAuth();
 
   const [isModalOpen, setIsModalOpen] = useState(Boolean(initialEventId));
@@ -49,6 +50,7 @@ export const ReturnsView: React.FC<ReturnsViewProps> = ({
     >
   >({});
   const [returnError, setReturnError] = useState<string | null>(null);
+  const [mobileScanBanner, setMobileScanBanner] = useState<string | null>(null);
 
   const [noteToPrint, setNoteToPrint] = useState<ReturnNote | null>(null);
 
@@ -86,6 +88,103 @@ export const ReturnsView: React.FC<ReturnsViewProps> = ({
     handleEventChange(target);
     setIsModalOpen(true);
   };
+
+  // Receive live scans from user's linked mobile QR scanner directly into Devoluciones / Albarán de Entrada
+  useEffect(() => {
+    const onRemoteQrScan = (event: Event) => {
+      const custom = event as CustomEvent<{ code?: string }>;
+      const code = custom.detail?.code;
+      if (!code) return;
+
+      const match = findUnitOrItemByCode(
+        code,
+        itemUnits,
+        items,
+        equipmentKits,
+        cableBoxes,
+        contracts
+      );
+
+      // Determine target event (if unit is currently out on an event, jump straight to it)
+      const targetEventId =
+        (isModalOpen && selectedEventId) ||
+        match.unit?.currentEventId ||
+        selectedEventId ||
+        events.find((e) => ['dispatched', 'pending_return', 'in_progress'].includes(e.status))?.id ||
+        '';
+
+      if (!targetEventId) return;
+      event.preventDefault();
+
+      if (!isModalOpen || targetEventId !== selectedEventId) {
+        handleEventChange(targetEventId);
+        setIsModalOpen(true);
+      }
+
+      const targetEventPendingLines = eventItems.filter(
+        (l) => l.eventId === targetEventId && l.quantityDispatched > l.quantityReturned
+      );
+
+      const candidateItemIds: { itemId: string; serial?: string; label: string }[] = [];
+      if (match.kit) {
+        match.kit.components.forEach((comp) => {
+          const it =
+            items.find((i) => i.id === comp.itemId) ||
+            items.find((i) => comp.itemCode && i.code.toLowerCase() === comp.itemCode.toLowerCase());
+          if (it) candidateItemIds.push({ itemId: it.id, label: match.kit!.name });
+        });
+      } else if (match.item || match.unit) {
+        const it = match.item || items.find((i) => i.id === match.unit?.itemId);
+        if (it) {
+          candidateItemIds.push({
+            itemId: it.id,
+            serial: match.unit?.serialNumber,
+            label: `${it.name}${match.unit?.serialNumber ? ` (N/S: ${match.unit.serialNumber})` : ''}`,
+          });
+        }
+      }
+
+      if (candidateItemIds.length === 0) {
+        setMobileScanBanner(`📱 QR leído desde móvil (${code}): revisa el material pendiente de devolver.`);
+        setTimeout(() => setMobileScanBanner(null), 4000);
+        return;
+      }
+
+      setReturnLines((prev) => {
+        const next = { ...prev };
+        candidateItemIds.forEach(({ itemId, serial }) => {
+          const evLine = targetEventPendingLines.find((l) => l.itemId === itemId);
+          const pendingMax = evLine
+            ? Math.max(1, evLine.quantityDispatched - evLine.quantityReturned)
+            : 999;
+          const existing = next[itemId] || {
+            quantity: 0,
+            condition: 'good' as ReturnCondition,
+            unitSerialNumbers: [],
+            incidentNotes: '',
+          };
+          const serials = [...existing.unitSerialNumbers];
+          if (serial && !serials.includes(serial)) {
+            serials.push(serial);
+          }
+          next[itemId] = {
+            ...existing,
+            quantity: Math.min(pendingMax, Math.max(1, existing.quantity)),
+            unitSerialNumbers: serials,
+          };
+        });
+        return next;
+      });
+
+      setMobileScanBanner(
+        `📱 Recepción QR desde móvil: ${candidateItemIds[0].label} marcado como devuelto ✓`
+      );
+      setTimeout(() => setMobileScanBanner(null), 4000);
+    };
+
+    window.addEventListener('jd-remote-qr-scan', onRemoteQrScan);
+    return () => window.removeEventListener('jd-remote-qr-scan', onRemoteQrScan);
+  }, [isModalOpen, selectedEventId, events, eventItems, items, itemUnits, equipmentKits, cableBoxes, contracts]);
 
   const handleExecuteReturn = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -301,6 +400,12 @@ export const ReturnsView: React.FC<ReturnsViewProps> = ({
               {/* Material Lines Selection */}
               <div className="space-y-2">
                 <span className="font-bold text-white block">Material Pendiente de Devolución:</span>
+
+                {mobileScanBanner && (
+                  <div className="p-3 rounded-xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-xs font-bold mb-2">
+                    {mobileScanBanner}
+                  </div>
+                )}
 
                 {selectedEventLines.length === 0 ? (
                   <p className="text-zinc-500 py-4 text-center bg-[#0d1117] rounded-lg border border-[#30363d]">

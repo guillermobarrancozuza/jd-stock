@@ -1,6 +1,6 @@
 import * as XLSX from 'xlsx';
 import QRCode from 'qrcode';
-import { AV_GROUPS, AVGroup } from '../types/inventory.ts';
+import { AV_GROUPS, AVGroup, Item, BackupReminderConfig } from '../types/inventory.ts';
 
 /**
  * Generate a pseudo EAN-13 barcode
@@ -109,6 +109,7 @@ export function downloadEmptyExcelTemplate() {
 
   // Columns specification
   const templateHeaders = [
+    'CODIGO',
     'GRUPO',
     'CATEGORIA',
     'SUBCATEGORIA',
@@ -120,6 +121,7 @@ export function downloadEmptyExcelTemplate() {
     'NUMEROS_DE_SERIE',
     'CODIGO_BARRAS',
     'UBICACION_ALMACEN',
+    'PRECIO_ALQUILER_TRABAJO',
     'PRECIO_COMPRA',
     'STOCK_MINIMO',
     'UNIDAD_MEDIDA',
@@ -141,6 +143,7 @@ export function downloadEmptyExcelTemplate() {
       NUMEROS_DE_SERIE: 'SH-AX-001, SH-AX-002, SH-AX-003, SH-AX-004',
       CODIGO_BARRAS: '',
       UBICACION_ALMACEN: 'Nave Central - Estantería A1 (Microfonía)',
+      PRECIO_ALQUILER_TRABAJO: 45.0,
       PRECIO_COMPRA: 850.0,
       STOCK_MINIMO: 2,
       UNIDAD_MEDIDA: 'Uds',
@@ -350,6 +353,7 @@ export function downloadEmptyExcelTemplate() {
   // Tab 1: Material_AV (con ejemplos reales de referencia)
   const wsTemplate = XLSX.utils.json_to_sheet(sampleRows, { header: templateHeaders });
   wsTemplate['!cols'] = [
+    { wch: 18 }, // CODIGO
     { wch: 26 }, // GRUPO
     { wch: 24 }, // CATEGORIA
     { wch: 24 }, // SUBCATEGORIA
@@ -361,6 +365,7 @@ export function downloadEmptyExcelTemplate() {
     { wch: 50 }, // NUMEROS_DE_SERIE
     { wch: 20 }, // CODIGO_BARRAS
     { wch: 38 }, // UBICACION_ALMACEN
+    { wch: 22 }, // PRECIO_ALQUILER_TRABAJO
     { wch: 18 }, // PRECIO_COMPRA
     { wch: 15 }, // STOCK_MINIMO
     { wch: 16 }, // UNIDAD_MEDIDA
@@ -424,6 +429,12 @@ export function downloadEmptyExcelTemplate() {
       'OBLIGATORIO': 'RECOMENDADO',
       'FORMATO / VALORES': 'Texto descriptivo de ubicación',
       'INSTRUCCIONES CLAVE': 'Estantería, nave, rack o zona donde se almacena habitualmente (ej: "Nave Central - Estantería A1")',
+    },
+    {
+      'CAMPO / COLUMNA': 'PRECIO_ALQUILER_TRABAJO',
+      'OBLIGATORIO': 'RECOMENDADO',
+      'FORMATO / VALORES': 'Número en Euros (ej: 45.00)',
+      'INSTRUCCIONES CLAVE': 'Precio de alquiler o tarifa de trabajo por día/servicio. Si modificas este precio en el XLS y vuelves a subir el archivo, se actualizará automáticamente en la app.',
     },
     {
       'CAMPO / COLUMNA': 'PRECIO_COMPRA',
@@ -526,6 +537,7 @@ export function downloadEmptyExcelTemplate() {
 }
 
 export interface ParsedItemRow {
+  code?: string;
   group: string;
   category: string;
   subcategory: string;
@@ -538,11 +550,106 @@ export interface ParsedItemRow {
   barcode?: string;
   defaultLocationName?: string;
   purchasePrice?: number;
+  rentalPrice?: number;
   minStock?: number;
   unit?: string;
   supplier?: string;
   description?: string;
   rawRow: any;
+}
+
+/**
+ * Export current inventory items & rental/work prices to Excel so they can be edited in XLS and re-imported
+ */
+export function exportInventoryPricesToExcel(items: Item[]) {
+  const wb = XLSX.utils.book_new();
+  const rows = items.map((item) => ({
+    CODIGO: item.code,
+    GRUPO: item.group,
+    CATEGORIA: item.category,
+    SUBCATEGORIA: item.subcategory || 'General',
+    NOMBRE_ARTICULO: item.name,
+    MARCA: item.brand,
+    MODELO: item.model,
+    CANTIDAD_TOTAL: item.totalQuantity,
+    TIENE_NUMERO_SERIE: item.hasSerialNumbers ? 'SI' : 'NO',
+    NUMEROS_DE_SERIE: '',
+    CODIGO_BARRAS: item.barcode || '',
+    UBICACION_ALMACEN: item.defaultLocationName || 'Nave Central',
+    PRECIO_ALQUILER_TRABAJO: item.rentalPrice ?? 0,
+    PRECIO_COMPRA: item.purchasePrice ?? 0,
+    STOCK_MINIMO: item.minStock ?? 2,
+    UNIDAD_MEDIDA: item.unit || 'Uds',
+    PROVEEDOR: item.supplier || '',
+    DESCRIPCION_NOTAS: item.description || item.notes || '',
+  }));
+
+  const ws = XLSX.utils.json_to_sheet(rows);
+  ws['!cols'] = [
+    { wch: 18 },
+    { wch: 24 },
+    { wch: 22 },
+    { wch: 20 },
+    { wch: 46 },
+    { wch: 18 },
+    { wch: 22 },
+    { wch: 15 },
+    { wch: 18 },
+    { wch: 22 },
+    { wch: 18 },
+    { wch: 32 },
+    { wch: 24 },
+    { wch: 16 },
+    { wch: 14 },
+    { wch: 14 },
+    { wch: 22 },
+    { wch: 45 },
+  ];
+  XLSX.utils.book_append_sheet(wb, ws, 'Material_AV');
+  const today = new Date().toISOString().split('T')[0];
+  XLSX.writeFile(wb, `Tarifas_y_Stock_JD_${today}.xlsx`);
+}
+
+/**
+ * Generate a recurring .ics calendar file for the Chief Admin backup reminder every X months
+ */
+export function downloadBackupReminderIcs(config: BackupReminderConfig) {
+  const interval = Math.max(1, Math.min(12, Math.round(config.intervalMonths || 3)));
+  const start = new Date();
+  start.setDate(start.getDate() + 1);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const dtStart = `${start.getFullYear()}${pad(start.getMonth() + 1)}${pad(start.getDate())}T100000`;
+  const dtEnd = `${start.getFullYear()}${pad(start.getMonth() + 1)}${pad(start.getDate())}T103000`;
+  const uid = `jd-backup-reminder-${Date.now()}@jdcontrol.es`;
+
+  const ics = [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//JD Control de Stock//Recordatorio Backup//ES',
+    'BEGIN:VEVENT',
+    `UID:${uid}`,
+    `DTSTAMP:${dtStart}Z`,
+    `DTSTART:${dtStart}`,
+    `DTEND:${dtEnd}`,
+    `RRULE:FREQ=MONTHLY;INTERVAL=${interval}`,
+    'SUMMARY:JD Control de Stock - Realizar Backup Completo (.JSON) y Guardar Contratos/Albaranes',
+    `DESCRIPTION:Recordatorio automático cada ${interval} meses para el Administrador Jefe (${config.adminEmail}). Accede a JD Control de Stock > Informes / Copias de Seguridad para descargar el JSON completo de la aplicación y guardar una copia de los contratos y albaranes en el ordenador físico.`,
+    'BEGIN:VALARM',
+    'TRIGGER:-PT15M',
+    'ACTION:DISPLAY',
+    'DESCRIPTION:Realizar copia de seguridad JSON y archivo de contratos/albaranes en PC físico',
+    'END:VALARM',
+    'END:VEVENT',
+    'END:VCALENDAR',
+  ].join('\r\n');
+
+  const blob = new Blob([ics], { type: 'text/calendar;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `Recordatorio_Backup_JD_Cada_${interval}_Meses.ics`;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 /**
@@ -608,15 +715,26 @@ export async function parseUploadedSpreadsheet(file: File): Promise<ParsedItemRo
         .filter(Boolean);
     }
 
+    const code = String(row['CODIGO'] || row['Código'] || row['Codigo'] || row['REF'] || '').trim();
     const barcode = String(row['CODIGO_BARRAS'] || row['Barcode'] || '').trim();
     const locationName = String(row['UBICACION_ALMACEN'] || row['Ubicación'] || row['Ubicacion'] || 'Nave Central').trim();
-    const purchasePrice = Number(row['PRECIO_COMPRA'] || row['Precio'] || 0) || 0;
+    const rawPurchase = row['PRECIO_COMPRA'] ?? row['Precio_Compra'] ?? row['Coste'];
+    const purchasePrice = rawPurchase !== '' && rawPurchase !== undefined ? Number(String(rawPurchase).replace(',', '.')) || 0 : undefined;
+    const rawRental =
+      row['PRECIO_ALQUILER_TRABAJO'] ??
+      row['PRECIO_ALQUILER'] ??
+      row['PRECIO_TRABAJO'] ??
+      row['TARIFA'] ??
+      row['Precio_Alquiler'] ??
+      row['Precio'];
+    const rentalPrice = rawRental !== '' && rawRental !== undefined ? Number(String(rawRental).replace(',', '.')) || 0 : undefined;
     const minStock = Number(row['STOCK_MINIMO'] || row['Minimo'] || 2) || 2;
     const unit = String(row['UNIDAD_MEDIDA'] || row['Unidad'] || 'Uds').trim();
     const supplier = String(row['PROVEEDOR'] || row['Proveedor'] || '').trim();
     const description = String(row['DESCRIPCION_NOTAS'] || row['Descripcion'] || row['Notas'] || '').trim();
 
     parsed.push({
+      code: code || undefined,
       group,
       category,
       subcategory,
@@ -629,6 +747,7 @@ export async function parseUploadedSpreadsheet(file: File): Promise<ParsedItemRo
       barcode: barcode || undefined,
       defaultLocationName: locationName,
       purchasePrice,
+      rentalPrice,
       minStock,
       unit,
       supplier,

@@ -551,7 +551,14 @@ export const PrintContractModal: React.FC<PrintContractModalProps> = ({
                   {contract.items.map((item, idx) => (
                     <tr key={item.id || idx}>
                       <td className="py-1.5">
-                        <div className="font-semibold text-zinc-900">{item.itemName}</div>
+                        <div className="font-semibold text-zinc-900 flex items-center gap-1.5 flex-wrap">
+                          {item.section && (
+                            <span className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded bg-zinc-200 text-zinc-800 font-mono">
+                              {item.section}
+                            </span>
+                          )}
+                          <span>{item.itemName}</span>
+                        </div>
                         {item.itemCode && (
                           <div className="text-[10px] text-zinc-500 font-mono">Ref: {item.itemCode}</div>
                         )}
@@ -720,6 +727,7 @@ function generateContractHtml(
             (item) => `
         <tr>
           <td style="padding: 8px 10px; border-bottom: 1px solid #e5e7eb;">
+            ${item.section ? `<span style="display:inline-block; font-size:9px; font-weight:bold; text-transform:uppercase; background:#e5e7eb; color:#1f2937; padding:1px 5px; border-radius:3px; margin-right:6px; font-family:monospace;">${item.section}</span>` : ''}
             <strong>${item.itemName}</strong>
             ${item.itemCode ? `<br><span style="font-family: monospace; font-size: 11px; color: #6b7280;">Ref: ${item.itemCode}</span>` : ''}
           </td>

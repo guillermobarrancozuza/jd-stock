@@ -20,6 +20,10 @@ import {
   Download,
   Upload,
   Barcode as BarcodeIcon,
+  FileSpreadsheet,
+  Check,
+  X as XIcon,
+  Euro,
 } from 'lucide-react';
 import { Item, AV_GROUPS } from '../../types/inventory.ts';
 import { useInventory } from '../../context/InventoryContext.tsx';
@@ -28,14 +32,14 @@ import { ItemFormModal } from './ItemFormModal.tsx';
 import { ItemDetailModal } from './ItemDetailModal.tsx';
 import { ImportXlsModal } from './ImportXlsModal.tsx';
 import { QrBarcodeModal } from './QrBarcodeModal.tsx';
-import { downloadEmptyExcelTemplate } from '../../lib/barcodeUtils.ts';
+import { downloadEmptyExcelTemplate, exportInventoryPricesToExcel } from '../../lib/barcodeUtils.ts';
 
 interface InventoryViewProps {
   searchQuery?: string;
 }
 
 export const InventoryView: React.FC<InventoryViewProps> = ({ searchQuery = '' }) => {
-  const { items, categories, locations } = useInventory();
+  const { items, categories, updateItemPrice } = useInventory();
   const { canManageInventory, canViewContracts } = useAuth();
 
   const [selectedGroup, setSelectedGroup] = useState<string>('all');
@@ -49,6 +53,8 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ searchQuery = '' }
   const [itemToEdit, setItemToEdit] = useState<Item | null>(null);
   const [itemToView, setItemToView] = useState<Item | null>(null);
   const [qrModalItem, setQrModalItem] = useState<Item | null>(null);
+  const [editingPriceId, setEditingPriceId] = useState<string | null>(null);
+  const [editingPriceValue, setEditingPriceValue] = useState<string>('');
 
   const query = (localSearch || searchQuery).toLowerCase().trim();
 
@@ -132,11 +138,21 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ searchQuery = '' }
             </button>
           </div>
 
+          {/* Export Current Catalog & Prices to XLS */}
+          <button
+            onClick={() => exportInventoryPricesToExcel(items)}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 border border-cyan-500/40 text-xs font-semibold transition cursor-pointer"
+            title="Descargar Excel con los precios actuales de alquiler/trabajo para editarlos y volver a subir"
+          >
+            <FileSpreadsheet className="w-3.5 h-3.5 text-cyan-400" />
+            <span>Exportar Precios XLS</span>
+          </button>
+
           {/* Download Empty Excel Template Button */}
           <button
             onClick={downloadEmptyExcelTemplate}
             className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-[#30363d] text-xs font-semibold transition cursor-pointer"
-            title="Descargar plantilla Excel vacía para entregar al cliente"
+            title="Descargar plantilla Excel vacía para rellenar precios y material"
           >
             <Download className="w-3.5 h-3.5 text-emerald-400" />
             <span>Plantilla XLS Vacía</span>
@@ -280,6 +296,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ searchQuery = '' }
                 <th className="py-3 px-4">Código / QR</th>
                 <th className="py-3 px-4">Grupo Técnico</th>
                 <th className="py-3 px-4">Artículo / Modelo</th>
+                <th className="py-3 px-4 text-right">Alquiler / Trabajo</th>
                 <th className="py-3 px-4 text-center">Total</th>
                 <th className="py-3 px-4 text-center">Disponible</th>
                 {canViewContracts && <th className="py-3 px-4 text-center">Reservado</th>}
@@ -341,6 +358,67 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ searchQuery = '' }
                           </span>
                         )}
                       </div>
+                    </td>
+                    <td className="py-3 px-4 text-right font-mono" onClick={(e) => e.stopPropagation()}>
+                      {editingPriceId === item.id ? (
+                        <div className="flex items-center justify-end gap-1">
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.5"
+                            autoFocus
+                            value={editingPriceValue}
+                            onChange={(e) => setEditingPriceValue(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                updateItemPrice(item.id, Number(editingPriceValue) || 0);
+                                setEditingPriceId(null);
+                              } else if (e.key === 'Escape') {
+                                setEditingPriceId(null);
+                              }
+                            }}
+                            className="w-20 bg-[#0d1117] border border-emerald-500 rounded px-1.5 py-0.5 text-right text-emerald-300 font-bold text-xs focus:outline-none"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => {
+                              updateItemPrice(item.id, Number(editingPriceValue) || 0);
+                              setEditingPriceId(null);
+                            }}
+                            className="p-1 rounded bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30 cursor-pointer"
+                            title="Guardar precio"
+                          >
+                            <Check className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setEditingPriceId(null)}
+                            className="p-1 rounded bg-zinc-800 text-zinc-400 hover:text-white cursor-pointer"
+                            title="Cancelar"
+                          >
+                            <XIcon className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          disabled={!canManageInventory}
+                          onClick={() => {
+                            if (!canManageInventory) return;
+                            setEditingPriceId(item.id);
+                            setEditingPriceValue(String(item.rentalPrice ?? 0));
+                          }}
+                          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded font-bold transition ${
+                            canManageInventory
+                              ? 'bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 cursor-pointer'
+                              : 'text-emerald-400'
+                          }`}
+                          title={canManageInventory ? 'Haz clic para editar el precio de alquiler / trabajo' : 'Precio alquiler/trabajo'}
+                        >
+                          <span>{(item.rentalPrice ?? 0).toFixed(2)} €</span>
+                          {canManageInventory && <Edit className="w-2.5 h-2.5 opacity-60" />}
+                        </button>
+                      )}
                     </td>
                     <td className="py-3 px-4 text-center font-bold font-mono text-zinc-200">
                       {item.totalQuantity} <span className="text-[10px] text-zinc-500 font-normal">{item.unit}</span>
@@ -425,9 +503,15 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ searchQuery = '' }
                   </span>
                 </div>
                 <h3 className="font-bold text-white text-sm mt-1">{item.name}</h3>
-                <p className="text-xs text-zinc-400">
-                  {item.brand} {item.model}
-                </p>
+                <div className="flex items-center justify-between gap-2 mt-0.5">
+                  <p className="text-xs text-zinc-400 truncate">
+                    {item.brand} {item.model}
+                  </p>
+                  <span className="inline-flex items-center gap-0.5 text-xs font-mono font-bold text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 px-2 py-0.5 rounded shrink-0">
+                    <Euro className="w-3 h-3" />
+                    {(item.rentalPrice ?? 0).toFixed(2)}
+                  </span>
+                </div>
               </div>
 
               {/* Stock Mini Bar */}

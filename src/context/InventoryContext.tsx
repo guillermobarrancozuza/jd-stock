@@ -29,6 +29,10 @@ import {
   ContractItem,
   BankPaymentDetails,
   CompanyFiscalConfig,
+  EquipmentKit,
+  CableBox,
+  CableBoxAdjustment,
+  BackupReminderConfig,
 } from '../types/inventory.ts';
 import {
   INITIAL_ITEMS,
@@ -43,12 +47,17 @@ import {
   INITIAL_SUPPLIERS,
   INITIAL_CONTRACTS,
   INITIAL_DISPATCHES,
+  INITIAL_EQUIPMENT_KITS,
+  INITIAL_CABLE_BOXES,
   DEFAULT_BANK_DETAILS,
   DEFAULT_CONTRACT_CLAUSES,
   DEFAULT_COMPANY_FISCAL_CONFIG,
+  DEFAULT_BACKUP_CONFIG,
 } from '../lib/initialData.ts';
 import { useAuth } from './AuthContext.tsx';
 import { generateBarcode, inferGroupFromCategory, ParsedItemRow } from '../lib/barcodeUtils.ts';
+import { findUnitOrItemByCode } from '../lib/qrScannerUtils.ts';
+import * as XLSX from 'xlsx';
 
 interface AvailabilityCheckResult {
   itemId: string;
@@ -81,14 +90,38 @@ interface InventoryContextType {
   purchases: Purchase[];
   inventorySessions: InventorySession[];
   contracts: Contract[];
+  equipmentKits: EquipmentKit[];
+  cableBoxes: CableBox[];
+  backupConfig: BackupReminderConfig;
+  isBackupDue: boolean;
   loading: boolean;
   isOfflineMode: boolean;
 
   // Item Operations
   saveItem: (item: Partial<Item> & { name: string; category: string; initialSerialNumbers?: string[] }) => Promise<Item>;
+  updateItemPrice: (itemId: string, rentalPrice: number, purchasePrice?: number) => Promise<void>;
   archiveItem: (itemId: string, reason?: string) => Promise<void>;
   saveItemUnit: (unit: Partial<ItemUnit> & { itemId: string; serialNumber: string }) => Promise<ItemUnit>;
-  importItemsFromSpreadsheet: (parsedRows: import('../lib/barcodeUtils.ts').ParsedItemRow[]) => Promise<{ imported: number; unitsCount: number; errors: string[] }>;
+  importItemsFromSpreadsheet: (parsedRows: import('../lib/barcodeUtils.ts').ParsedItemRow[]) => Promise<{ imported: number; updated: number; unitsCount: number; errors: string[] }>;
+
+  // Composite QR Kits & Cable Boxes
+  saveEquipmentKit: (kit: Partial<EquipmentKit> & { name: string }) => Promise<EquipmentKit>;
+  deleteEquipmentKit: (kitId: string) => Promise<void>;
+  saveCableBox: (box: Partial<CableBox> & { name: string; cableType: string }) => Promise<CableBox>;
+  deleteCableBox: (boxId: string) => Promise<void>;
+  adjustCableBoxQuantity: (
+    boxId: string,
+    type: 'broken' | 'lost' | 'restocked',
+    amount: number,
+    notes?: string,
+    eventName?: string
+  ) => Promise<CableBox | null>;
+
+  // Backup Reminder & Full JSON Export/Restore
+  updateBackupConfig: (partial: Partial<BackupReminderConfig>) => void;
+  exportFullBackupJson: () => void;
+  exportContractsAndDispatchesArchive: () => void;
+  restoreFullBackupJson: (jsonText: string) => Promise<{ restoredCollections: number }>;
 
   // Category & Location Operations
   saveCategory: (category: Partial<Category> & { name: string }) => Promise<Category>;
@@ -199,9 +232,20 @@ interface InventoryContextType {
       itemName: string;
       itemCode: string;
       quantity: number;
+      section?: string;
       unitSerialNumbers?: string[];
+      verifiedByQr?: boolean;
+      scannedQrCode?: string;
+      kitId?: string;
+      cableBoxId?: string;
+      kitComponentsSummary?: string;
     }
   ) => Promise<void>;
+  verifyDispatchLineByQr: (
+    dispatchId: string,
+    section: string,
+    rawQrCode: string
+  ) => Promise<{ label: string; kind: 'kit' | 'cable_box' | 'unit' | 'item' | 'custom' }>;
 
   // Material Damage Direct from Reception to SAT
   reportDamageFromPurchase: (
@@ -247,7 +291,7 @@ const setStored = <T,>(key: string, val: T) => {
 };
 
 export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { userProfile } = useAuth();
+  const { userProfile, isAuthenticated, isPending } = useAuth();
   const [loading, setLoading] = useState(true);
   const [isOfflineMode, setIsOfflineMode] = useState(false);
 
@@ -267,6 +311,12 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [purchases, setPurchases] = useState<Purchase[]>(() => getStored('purchases', []));
   const [inventorySessions, setInventorySessions] = useState<InventorySession[]>(() => getStored('inventory_sessions', []));
   const [contracts, setContracts] = useState<Contract[]>(() => getStored('contracts', INITIAL_CONTRACTS));
+  const [equipmentKits, setEquipmentKits] = useState<EquipmentKit[]>(() => getStored('equipment_kits', INITIAL_EQUIPMENT_KITS));
+  const [cableBoxes, setCableBoxes] = useState<CableBox[]>(() => getStored('cable_boxes', INITIAL_CABLE_BOXES));
+  const [backupConfig, setBackupConfig] = useState<BackupReminderConfig>(() => {
+    const stored = getStored<BackupReminderConfig>('backup_config', DEFAULT_BACKUP_CONFIG);
+    return { ...DEFAULT_BACKUP_CONFIG, ...stored };
+  });
   const [companyFiscalConfig, setCompanyFiscalConfig] = useState<CompanyFiscalConfig>(() => {
     const stored = getStored<CompanyFiscalConfig>('company_fiscal_config', DEFAULT_COMPANY_FISCAL_CONFIG);
     return { ...DEFAULT_COMPANY_FISCAL_CONFIG, ...stored };
@@ -278,6 +328,20 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }
     return { ...DEFAULT_BANK_DETAILS, ...stored };
   });
+
+  // Compute if periodic Chief Admin backup is currently due
+  const isBackupDue = (() => {
+    if (!backupConfig.enabled) return false;
+    const now = Date.now();
+    if (backupConfig.snoozedUntil && new Date(backupConfig.snoozedUntil).getTime() > now) {
+      return false;
+    }
+    if (!backupConfig.lastBackupDate) return true;
+    const last = new Date(backupConfig.lastBackupDate);
+    const nextDue = new Date(last);
+    nextDue.setMonth(nextDue.getMonth() + Math.max(1, backupConfig.intervalMonths || 3));
+    return now >= nextDue.getTime();
+  })();
 
   // Sync to local storage
   useEffect(() => { setStored('items', items); }, [items]);
@@ -295,21 +359,29 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   useEffect(() => { setStored('purchases', purchases); }, [purchases]);
   useEffect(() => { setStored('inventory_sessions', inventorySessions); }, [inventorySessions]);
   useEffect(() => { setStored('contracts', contracts); }, [contracts]);
+  useEffect(() => { setStored('equipment_kits', equipmentKits); }, [equipmentKits]);
+  useEffect(() => { setStored('cable_boxes', cableBoxes); }, [cableBoxes]);
+  useEffect(() => { setStored('backup_config', backupConfig); }, [backupConfig]);
   useEffect(() => { setStored('company_fiscal_config', companyFiscalConfig); }, [companyFiscalConfig]);
   useEffect(() => { setStored('default_bank_details', defaultBankDetails); }, [defaultBankDetails]);
 
-  // Firestore sync effect
+  // Firestore sync effect — only subscribe once user is authenticated AND approved by Chief Admin
   useEffect(() => {
+    if (!isAuthenticated || isPending || !userProfile || userProfile.role === 'pending') {
+      setLoading(false);
+      return;
+    }
+
     let unsubItems: (() => void) | undefined;
     let unsubEvents: (() => void) | undefined;
+    let unsubKits: (() => void) | undefined;
+    let unsubBoxes: (() => void) | undefined;
 
     const initFirestoreSync = async () => {
       try {
         const itemsColl = collection(db, 'items');
         const snap = await getDocs(itemsColl);
         if (snap.empty) {
-          // If empty, auto-seed to Firestore
-          console.log('Seeding initial AV inventory to Firestore...');
           for (const item of INITIAL_ITEMS) {
             await setDoc(doc(db, 'items', item.id), item);
           }
@@ -345,6 +417,26 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           console.warn('Events snapshot warning:', err.message);
         });
 
+        unsubKits = onSnapshot(collection(db, 'equipmentKits'), (snapshot) => {
+          if (!snapshot.empty) {
+            const list: EquipmentKit[] = [];
+            snapshot.forEach((docSnap) => list.push(docSnap.data() as EquipmentKit));
+            setEquipmentKits(list);
+          }
+        }, () => {
+          // ignore offline
+        });
+
+        unsubBoxes = onSnapshot(collection(db, 'cableBoxes'), (snapshot) => {
+          if (!snapshot.empty) {
+            const list: CableBox[] = [];
+            snapshot.forEach((docSnap) => list.push(docSnap.data() as CableBox));
+            setCableBoxes(list);
+          }
+        }, () => {
+          // ignore offline
+        });
+
         setIsOfflineMode(false);
       } catch (err) {
         console.warn('Firestore connection failed, using local in-browser persistence:', err);
@@ -359,8 +451,10 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return () => {
       if (unsubItems) unsubItems();
       if (unsubEvents) unsubEvents();
+      if (unsubKits) unsubKits();
+      if (unsubBoxes) unsubBoxes();
     };
-  }, []);
+  }, [isAuthenticated, isPending, userProfile?.role]);
 
   // Helper to record an immutable movement
   const recordMovement = useCallback(
@@ -542,6 +636,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       defaultLocationName: data.defaultLocationName || 'Nave Central',
       supplier: data.supplier,
       purchasePrice: data.purchasePrice,
+      rentalPrice: data.rentalPrice,
       acquisitionDate: data.acquisitionDate || now.split('T')[0],
       status: data.status || 'active',
       minStock: data.minStock !== undefined ? data.minStock : 2,
@@ -635,29 +730,98 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return fullItem;
   };
 
-  // Bulk import items from spreadsheet (Excel XLSX / CSV)
+  // Quick inline price updater (rental/work price and optional purchase price)
+  const updateItemPrice = async (itemId: string, rentalPrice: number, purchasePrice?: number) => {
+    const now = new Date().toISOString();
+    const cleanRental = Math.max(0, Number(rentalPrice) || 0);
+    setItems((prev) =>
+      prev.map((it) => {
+        if (it.id !== itemId) return it;
+        return {
+          ...it,
+          rentalPrice: cleanRental,
+          ...(purchasePrice !== undefined ? { purchasePrice: Math.max(0, Number(purchasePrice) || 0) } : {}),
+          updatedAt: now,
+        };
+      })
+    );
+    try {
+      await updateDoc(doc(db, 'items', itemId), {
+        rentalPrice: cleanRental,
+        ...(purchasePrice !== undefined ? { purchasePrice: Math.max(0, Number(purchasePrice) || 0) } : {}),
+        updatedAt: now,
+      });
+    } catch {
+      // local fallback
+    }
+  };
+
+  // Bulk import & smart upsert from spreadsheet (Excel XLSX / CSV) — updates prices/stock on existing items!
   const importItemsFromSpreadsheet = async (
     parsedRows: ParsedItemRow[]
-  ): Promise<{ imported: number; unitsCount: number; errors: string[] }> => {
+  ): Promise<{ imported: number; updated: number; unitsCount: number; errors: string[] }> => {
     let imported = 0;
+    let updated = 0;
     let unitsCount = 0;
     const errors: string[] = [];
     const now = new Date().toISOString();
 
     const newItems: Item[] = [];
+    const updatedMap = new Map<string, Item>();
     const newUnits: ItemUnit[] = [];
 
     for (let index = 0; index < parsedRows.length; index++) {
       const row = parsedRows[index];
       try {
         if (!row.name || !row.name.trim()) continue;
+        const cleanName = row.name.trim();
+        const cleanCode = row.code?.trim();
+
+        // Check if existing item matches by code or exact name -> smart upsert
+        const existing = items.find(
+          (it) =>
+            (cleanCode && it.code.toLowerCase() === cleanCode.toLowerCase()) ||
+            it.name.toLowerCase() === cleanName.toLowerCase()
+        );
+
+        if (existing) {
+          const nextTotal = row.totalQuantity > 0 ? row.totalQuantity : existing.totalQuantity;
+          const nextAvail = Math.max(0, nextTotal - existing.outQuantity - existing.damagedQuantity - existing.reservedQuantity);
+          const mergedItem: Item = {
+            ...existing,
+            name: cleanName,
+            group: row.group || existing.group,
+            category: row.category || existing.category,
+            subcategory: row.subcategory || existing.subcategory,
+            brand: row.brand || existing.brand,
+            model: row.model || existing.model,
+            totalQuantity: nextTotal,
+            availableQuantity: nextAvail,
+            rentalPrice: row.rentalPrice !== undefined ? row.rentalPrice : existing.rentalPrice,
+            purchasePrice: row.purchasePrice !== undefined ? row.purchasePrice : existing.purchasePrice,
+            minStock: row.minStock !== undefined ? row.minStock : existing.minStock,
+            unit: row.unit || existing.unit,
+            supplier: row.supplier || existing.supplier,
+            description: row.description || existing.description,
+            updatedAt: now,
+          };
+          updatedMap.set(existing.id, mergedItem);
+          updated++;
+          try {
+            await setDoc(doc(db, 'items', existing.id), mergedItem);
+          } catch {
+            // offline fallback
+          }
+          continue;
+        }
 
         const itemId = `item-imp-${Date.now()}-${index}`;
-        const cleanName = row.name.trim();
         const category = row.category || 'General';
         const group = row.group || inferGroupFromCategory(category, cleanName);
         const codePrefix = group.substring(0, 3).toUpperCase().replace(/[^A-Z]/g, 'EQ');
-        const code = `${codePrefix}-${cleanName.substring(0, 4).toUpperCase().replace(/[^A-Z0-9]/g, '')}-${Math.floor(100 + Math.random() * 900)}`;
+        const code =
+          cleanCode ||
+          `${codePrefix}-${cleanName.substring(0, 4).toUpperCase().replace(/[^A-Z0-9]/g, '')}-${Math.floor(100 + Math.random() * 900)}`;
         const barcode = row.barcode || generateBarcode(code);
         const qrCode = `QR-${code}`;
 
@@ -690,7 +854,8 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           defaultLocationId,
           defaultLocationName: matchedLoc ? `${matchedLoc.warehouse} - ${matchedLoc.zone}` : defaultLocationName,
           supplier: row.supplier,
-          purchasePrice: row.purchasePrice,
+          purchasePrice: row.purchasePrice ?? 0,
+          rentalPrice: row.rentalPrice ?? 0,
           acquisitionDate: now.split('T')[0],
           status: 'active',
           minStock: row.minStock || 2,
@@ -702,7 +867,6 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         newItems.push(itemObj);
         imported++;
 
-        // Units creation
         if (row.hasSerialNumbers) {
           if (row.serialNumbers && row.serialNumbers.length > 0) {
             for (const sn of row.serialNumbers) {
@@ -723,7 +887,6 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
               unitsCount++;
             }
           } else {
-            // Auto-generate serial numbers for each physical unit
             for (let i = 1; i <= Math.min(totalQty, 100); i++) {
               const sn = `${itemObj.code}-${String(i).padStart(2, '0')}`;
               const uId = `unit-imp-${Date.now()}-${i}-${Math.floor(Math.random() * 1000)}`;
@@ -745,47 +908,413 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           }
         }
 
-        // Firestore sync attempt
         try {
           await setDoc(doc(db, 'items', itemObj.id), itemObj);
-        } catch (e) {
-          // ignore offline
+        } catch {
+          // offline fallback
         }
       } catch (err: any) {
         errors.push(`Error en fila ${index + 1} (${row.name || 'desconocido'}): ${err.message}`);
       }
     }
 
-    if (newItems.length > 0) {
-      setItems((prev) => [...newItems, ...prev]);
+    if (newItems.length > 0 || updatedMap.size > 0) {
+      setItems((prev) => {
+        const patched = prev.map((it) => updatedMap.get(it.id) || it);
+        return [...newItems, ...patched];
+      });
     }
     if (newUnits.length > 0) {
       setItemUnits((prev) => [...newUnits, ...prev]);
       for (const u of newUnits) {
         try {
           await setDoc(doc(db, 'itemUnits', u.id), u);
-        } catch (e) {
-          // ignore offline
+        } catch {
+          // offline fallback
         }
       }
     }
 
-    // Record bulk movement
-    if (newItems.length > 0) {
+    if (newItems.length > 0 || updatedMap.size > 0) {
       await recordMovement({
-        type: 'create',
+        type: 'adjustment',
         itemId: 'bulk-import',
-        itemName: `Importación masiva (${newItems.length} referencias)`,
+        itemName: `Sincronización Excel (${newItems.length} nuevos, ${updatedMap.size} actualizados)`,
         itemCode: 'IMP-XLS',
-        quantity: newItems.reduce((acc, it) => acc + it.totalQuantity, 0),
-        sourceLocation: 'Importación Excel / CSV',
+        quantity: newItems.length + updatedMap.size,
+        sourceLocation: 'Excel / CSV',
         targetLocation: 'Almacén Central',
-        reason: `Carga masiva de ${newItems.length} artículos y ${unitsCount} unidades físicas con códigos QR y de barras.`,
+        reason: `Importación/Actualización de tarifas y stock: ${newItems.length} nuevos, ${updatedMap.size} precios/datos actualizados.`,
         referenceCode: `IMP-${Date.now()}`,
       });
     }
 
-    return { imported, unitsCount, errors };
+    return { imported, updated, unitsCount, errors };
+  };
+
+  // --- Composite Equipment Kits (QR Conjuntos: Carros, Racks, Packs) ---
+  const saveEquipmentKit = async (
+    kitData: Partial<EquipmentKit> & { name: string }
+  ): Promise<EquipmentKit> => {
+    const now = new Date().toISOString();
+    const id = kitData.id || `kit-${Date.now()}`;
+    const cleanCode =
+      kitData.code?.trim().toUpperCase() ||
+      `KIT-${(kitData.section || 'AV').slice(0, 3).toUpperCase().replace(/[^A-Z]/g, 'X')}-${Math.floor(100 + Math.random() * 900)}`;
+    const qrCode = kitData.qrCode?.trim() || `QR-${cleanCode}`;
+
+    const fullKit: EquipmentKit = {
+      id,
+      code: cleanCode,
+      name: kitData.name.trim(),
+      section: kitData.section || 'Sonido',
+      qrCode,
+      description: kitData.description || '',
+      locationName: kitData.locationName || 'Nave Central',
+      rentalPrice: kitData.rentalPrice !== undefined ? Number(kitData.rentalPrice) : 0,
+      status: kitData.status || 'available',
+      currentEventId: kitData.currentEventId ?? null,
+      currentEventName: kitData.currentEventName ?? null,
+      components: kitData.components || [],
+      notes: kitData.notes || '',
+      createdAt: kitData.createdAt || now,
+      updatedAt: now,
+    };
+
+    setEquipmentKits((prev) => {
+      const exists = prev.some((k) => k.id === id);
+      return exists ? prev.map((k) => (k.id === id ? fullKit : k)) : [fullKit, ...prev];
+    });
+
+    try {
+      await setDoc(doc(db, 'equipmentKits', id), fullKit);
+    } catch {
+      // local fallback
+    }
+
+    return fullKit;
+  };
+
+  const deleteEquipmentKit = async (kitId: string) => {
+    setEquipmentKits((prev) => prev.filter((k) => k.id !== kitId));
+    try {
+      await deleteDoc(doc(db, 'equipmentKits', kitId));
+    } catch {
+      // local fallback
+    }
+  };
+
+  // --- Cable Boxes with QR & Breakage/Loss Deduction ---
+  const saveCableBox = async (
+    boxData: Partial<CableBox> & { name: string; cableType: string }
+  ): Promise<CableBox> => {
+    const now = new Date().toISOString();
+    const id = boxData.id || `cbox-${Date.now()}`;
+    const cleanCode =
+      boxData.code?.trim().toUpperCase() ||
+      `CAJA-${boxData.cableType.slice(0, 4).toUpperCase().replace(/[^A-Z0-9]/g, 'X')}-${Math.floor(10 + Math.random() * 90)}`;
+    const qrCode = boxData.qrCode?.trim() || `QR-${cleanCode}`;
+    const initialQty = Math.max(1, Number(boxData.initialQuantity) || 10);
+    const currentQty = boxData.currentQuantity !== undefined ? Math.max(0, Number(boxData.currentQuantity)) : initialQty;
+
+    const fullBox: CableBox = {
+      id,
+      code: cleanCode,
+      name: boxData.name.trim(),
+      cableType: boxData.cableType.trim(),
+      cableLength: boxData.cableLength || '',
+      qrCode,
+      linkedItemId: boxData.linkedItemId || undefined,
+      initialQuantity: initialQty,
+      currentQuantity: currentQty,
+      brokenCount: boxData.brokenCount || 0,
+      lostCount: boxData.lostCount || 0,
+      locationName: boxData.locationName || 'Zona Cableado & Distribución Eléctrica',
+      section: boxData.section || 'Cableado',
+      status: currentQty < initialQty ? 'incomplete' : (boxData.status || 'available'),
+      notes: boxData.notes || '',
+      adjustments: boxData.adjustments || [],
+      createdAt: boxData.createdAt || now,
+      updatedAt: now,
+    };
+
+    setCableBoxes((prev) => {
+      const exists = prev.some((b) => b.id === id);
+      return exists ? prev.map((b) => (b.id === id ? fullBox : b)) : [fullBox, ...prev];
+    });
+
+    try {
+      await setDoc(doc(db, 'cableBoxes', id), fullBox);
+    } catch {
+      // local fallback
+    }
+
+    return fullBox;
+  };
+
+  const deleteCableBox = async (boxId: string) => {
+    setCableBoxes((prev) => prev.filter((b) => b.id !== boxId));
+    try {
+      await deleteDoc(doc(db, 'cableBoxes', boxId));
+    } catch {
+      // local fallback
+    }
+  };
+
+  const adjustCableBoxQuantity = async (
+    boxId: string,
+    type: 'broken' | 'lost' | 'restocked',
+    amount: number,
+    notes?: string,
+    eventName?: string
+  ): Promise<CableBox | null> => {
+    const box = cableBoxes.find((b) => b.id === boxId);
+    if (!box) return null;
+    const cleanAmt = Math.max(1, Math.round(amount));
+    const now = new Date().toISOString();
+
+    const prevQty = box.currentQuantity;
+    const newQty =
+      type === 'restocked'
+        ? prevQty + cleanAmt
+        : Math.max(0, prevQty - cleanAmt);
+
+    const newBroken = type === 'broken' ? box.brokenCount + cleanAmt : box.brokenCount;
+    const newLost = type === 'lost' ? box.lostCount + cleanAmt : box.lostCount;
+    const nextInitial = type === 'restocked' && newQty > box.initialQuantity ? newQty : box.initialQuantity;
+
+    const adj: CableBoxAdjustment = {
+      id: `adj-${Date.now()}`,
+      date: now,
+      type,
+      amount: cleanAmt,
+      previousQuantity: prevQty,
+      newQuantity: newQty,
+      userName: userProfile?.name || 'Técnico Almacén',
+      eventName: eventName || undefined,
+      notes: notes || (type === 'broken' ? 'Cable roto descontado del QR de caja' : type === 'lost' ? 'Cable perdido descontado del QR de caja' : 'Reposición de cables en caja'),
+    };
+
+    const updatedBox: CableBox = {
+      ...box,
+      initialQuantity: nextInitial,
+      currentQuantity: newQty,
+      brokenCount: newBroken,
+      lostCount: newLost,
+      status: newQty < nextInitial ? 'incomplete' : 'available',
+      adjustments: [adj, ...(box.adjustments || [])],
+      updatedAt: now,
+    };
+
+    setCableBoxes((prev) => prev.map((b) => (b.id === boxId ? updatedBox : b)));
+    try {
+      await setDoc(doc(db, 'cableBoxes', boxId), updatedBox);
+    } catch {
+      // local fallback
+    }
+
+    // If linked to an inventory catalog item, adjust its damaged/total stock accordingly
+    if (box.linkedItemId) {
+      const linked = items.find((i) => i.id === box.linkedItemId);
+      if (linked) {
+        setItems((prev) =>
+          prev.map((it) => {
+            if (it.id !== box.linkedItemId) return it;
+            if (type === 'broken') {
+              const newDamaged = it.damagedQuantity + cleanAmt;
+              return {
+                ...it,
+                damagedQuantity: newDamaged,
+                availableQuantity: Math.max(0, it.totalQuantity - it.outQuantity - newDamaged - it.reservedQuantity),
+                updatedAt: now,
+              };
+            }
+            if (type === 'lost') {
+              const newTotal = Math.max(0, it.totalQuantity - cleanAmt);
+              return {
+                ...it,
+                totalQuantity: newTotal,
+                availableQuantity: Math.max(0, newTotal - it.outQuantity - it.damagedQuantity - it.reservedQuantity),
+                updatedAt: now,
+              };
+            }
+            const newTotal = it.totalQuantity + cleanAmt;
+            return {
+              ...it,
+              totalQuantity: newTotal,
+              availableQuantity: Math.max(0, newTotal - it.outQuantity - it.damagedQuantity - it.reservedQuantity),
+              updatedAt: now,
+            };
+          })
+        );
+      }
+    }
+
+    await recordMovement({
+      type: type === 'restocked' ? 'in' : 'adjustment',
+      itemId: box.linkedItemId || box.id,
+      itemName: `${box.name} (${box.cableType})`,
+      itemCode: box.code,
+      quantity: cleanAmt,
+      sourceLocation: box.locationName,
+      targetLocation:
+        type === 'broken'
+          ? 'Baja por Rotura (Cable)'
+          : type === 'lost'
+          ? 'Pérdida / Extravío (Cable)'
+          : box.locationName,
+      eventName: eventName || null,
+      reason:
+        type === 'broken'
+          ? `Descuento de ${cleanAmt} cable(s) ROTO(S) en QR ${box.qrCode} (${prevQty} → ${newQty})`
+          : type === 'lost'
+          ? `Descuento de ${cleanAmt} cable(s) PERDIDO(S) en QR ${box.qrCode} (${prevQty} → ${newQty})`
+          : `Reposición de +${cleanAmt} cable(s) en QR ${box.qrCode} (${prevQty} → ${newQty})`,
+      notes: notes || '',
+      referenceCode: box.qrCode,
+    });
+
+    return updatedBox;
+  };
+
+  // --- Backup Reminder & Full JSON Export / Restore ---
+  const updateBackupConfig = (partial: Partial<BackupReminderConfig>) => {
+    setBackupConfig((prev) => ({ ...prev, ...partial }));
+  };
+
+  const exportFullBackupJson = () => {
+    const now = new Date();
+    const today = now.toISOString().split('T')[0];
+    const backupPayload = {
+      app: 'JD Control de Stock',
+      version: '2.0',
+      exportedAt: now.toISOString(),
+      exportedBy: userProfile?.email || 'admin@jdcontrol.es',
+      data: {
+        items,
+        itemUnits,
+        equipmentKits,
+        cableBoxes,
+        categories,
+        locations,
+        events,
+        eventItems,
+        incidents,
+        movements,
+        clients,
+        suppliers,
+        dispatches,
+        returns,
+        purchases,
+        inventorySessions,
+        contracts,
+        companyFiscalConfig,
+        defaultBankDetails,
+        backupConfig,
+      },
+    };
+
+    const blob = new Blob([JSON.stringify(backupPayload, null, 2)], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `JD_Backup_Completo_${today}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+
+    setBackupConfig((prev) => ({
+      ...prev,
+      lastBackupDate: now.toISOString(),
+      snoozedUntil: null,
+    }));
+  };
+
+  const exportContractsAndDispatchesArchive = () => {
+    const now = new Date();
+    const today = now.toISOString().split('T')[0];
+
+    // 1. Download JSON archive of contracts & dispatches
+    const archivePayload = {
+      app: 'JD Control de Stock - Archivo de Contratos y Albaranes',
+      exportedAt: now.toISOString(),
+      contractsCount: contracts.length,
+      dispatchesCount: dispatches.length,
+      contracts,
+      dispatches,
+      companyFiscalConfig,
+    };
+    const blob = new Blob([JSON.stringify(archivePayload, null, 2)], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `JD_Contratos_y_Albaranes_${today}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+
+    // 2. Also export Excel workbook for physical PC viewing
+    const wb = XLSX.utils.book_new();
+    const contractRows = contracts.map((c) => ({
+      CODIGO: c.code,
+      TIPO: c.isGeneric ? 'Genérico / Libre' : 'Estándar',
+      EVENTO: c.eventName,
+      CLIENTE: c.clientName,
+      CIF_CLIENTE: c.clientTaxId || '',
+      FECHA_EVENTO: c.eventDate ? new Date(c.eventDate).toLocaleDateString('es-ES') : '',
+      UBICACION: c.eventLocation,
+      BASE_IMPONIBLE: c.subtotal,
+      IVA: c.taxAmount,
+      TOTAL_EUR: c.totalAmount,
+      ESTADO: c.status,
+      CONCEPTOS: c.items.map((i) => `[${i.section || i.category || 'General'}] ${i.quantity}x ${i.itemName} (${i.totalPrice}€)`).join(' | '),
+    }));
+    const dispatchRows = dispatches.map((d) => ({
+      CODIGO_ALBARAN: d.code,
+      CONTRATO: d.contractCode || '',
+      EVENTO: d.eventName,
+      CLIENTE: d.clientName,
+      FECHA_SALIDA: d.dispatchDate ? new Date(d.dispatchDate).toLocaleDateString('es-ES') : '',
+      ESTADO: d.status,
+      FIRMADO_POR: d.signerName || 'Pendiente',
+      MATERIAL_Y_VERIFICACION_QR: d.items
+        .map((i) => `[${i.section || 'General'}] ${i.quantity}x ${i.itemName}${i.verifiedByQr ? ' (✓ QR: ' + (i.scannedQrCode || 'OK') + ')' : ''}`)
+        .join(' | '),
+    }));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(contractRows.length ? contractRows : [{ INFO: 'Sin contratos' }]), 'Contratos');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(dispatchRows.length ? dispatchRows : [{ INFO: 'Sin albaranes' }]), 'Albaranes');
+    XLSX.writeFile(wb, `JD_Contratos_y_Albaranes_${today}.xlsx`);
+  };
+
+  const restoreFullBackupJson = async (jsonText: string): Promise<{ restoredCollections: number }> => {
+    const parsed = JSON.parse(jsonText);
+    const data = parsed?.data || parsed;
+    if (!data || typeof data !== 'object') {
+      throw new Error('El archivo JSON no tiene un formato de copia de seguridad válido de JD Control de Stock.');
+    }
+    let count = 0;
+    if (Array.isArray(data.items)) { setItems(data.items); count++; }
+    if (Array.isArray(data.itemUnits)) { setItemUnits(data.itemUnits); count++; }
+    if (Array.isArray(data.equipmentKits)) { setEquipmentKits(data.equipmentKits); count++; }
+    if (Array.isArray(data.cableBoxes)) { setCableBoxes(data.cableBoxes); count++; }
+    if (Array.isArray(data.categories)) { setCategories(data.categories); count++; }
+    if (Array.isArray(data.locations)) { setLocations(data.locations); count++; }
+    if (Array.isArray(data.events)) { setEvents(data.events); count++; }
+    if (Array.isArray(data.eventItems)) { setEventItems(data.eventItems); count++; }
+    if (Array.isArray(data.incidents)) { setIncidents(data.incidents); count++; }
+    if (Array.isArray(data.movements)) { setMovements(data.movements); count++; }
+    if (Array.isArray(data.clients)) { setClients(data.clients); count++; }
+    if (Array.isArray(data.suppliers)) { setSuppliers(data.suppliers); count++; }
+    if (Array.isArray(data.dispatches)) { setDispatches(data.dispatches); count++; }
+    if (Array.isArray(data.returns)) { setReturns(data.returns); count++; }
+    if (Array.isArray(data.purchases)) { setPurchases(data.purchases); count++; }
+    if (Array.isArray(data.inventorySessions)) { setInventorySessions(data.inventorySessions); count++; }
+    if (Array.isArray(data.contracts)) { setContracts(data.contracts); count++; }
+    if (data.companyFiscalConfig) { setCompanyFiscalConfig(data.companyFiscalConfig); count++; }
+    if (data.defaultBankDetails) { setDefaultBankDetails(data.defaultBankDetails); count++; }
+
+    if (count === 0) {
+      throw new Error('No se encontraron colecciones de datos reconocibles en el archivo JSON.');
+    }
+    return { restoredCollections: count };
   };
 
   // Archive item (soft delete - preserving movement history)
@@ -1762,13 +2291,19 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     let contractItems: ContractItem[] = assignedLines.map((line, idx) => {
       const itm = items.find((i) => i.id === line.itemId);
-      const baseDailyPrice = itm?.purchasePrice ? Math.max(30, Math.round(itm.purchasePrice * 0.05)) : 60;
+      const baseDailyPrice =
+        itm?.rentalPrice && itm.rentalPrice > 0
+          ? itm.rentalPrice
+          : itm?.purchasePrice
+          ? Math.max(30, Math.round(itm.purchasePrice * 0.05))
+          : 60;
       const unitPrice = baseDailyPrice;
       const totalPrice = unitPrice * line.quantityRequested * days;
 
       return {
         id: `ci-${Date.now()}-${idx}`,
         itemId: line.itemId,
+        section: itm?.category?.toLowerCase().includes('ilumin') ? 'Iluminación' : itm?.category?.toLowerCase().includes('vídeo') || itm?.category?.toLowerCase().includes('video') ? 'Vídeo' : itm?.category?.toLowerCase().includes('truss') ? 'Estructuras / Truss' : itm?.category?.toLowerCase().includes('cable') ? 'Cableado' : 'Sonido',
         itemName: line.itemName,
         itemCode: line.itemCode,
         category: itm?.category || 'Audiovisual',
@@ -1918,10 +2453,19 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     // 3. Automatically create or synchronize Dispatch Note (Albarán de Salida)
     const year = new Date().getFullYear();
     const dispatchCode = `ALB-OUT-${year}-${contract.code.replace('CTR-', '').padStart(3, '0')}`;
+    const contractSections = contract.items.map((ci) => ({
+      section: ci.section || ci.category || 'Sonido',
+      description: ci.itemName,
+      quantity: ci.quantity,
+    }));
 
     setDispatches((prev) => {
       const exists = prev.find((d) => d.contractId === contract.id || d.contractCode === contract.code);
-      if (exists) return prev;
+      if (exists) {
+        return prev.map((d) =>
+          d.id === exists.id ? { ...d, contractSections } : d
+        );
+      }
 
       const newDispatch: DispatchNote = {
         id: `dsp-${Date.now()}`,
@@ -1936,19 +2480,26 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         status: 'preparing',
         contractId: contract.id,
         contractCode: contract.code,
-        notes: `Albarán de salida generado automáticamente desde Contrato ${contract.code}. Material listo para preparación y picking por el encargado de almacén/técnico.`,
-        items: contract.items.map((ci) => {
-          const matched = items.find(
-            (i) => i.id === ci.itemId || i.name.toLowerCase() === ci.itemName.toLowerCase()
-          );
-          return {
-            itemId: matched?.id || ci.itemId || `item-${ci.id}`,
-            itemName: ci.itemName,
-            itemCode: matched?.code || ci.itemCode || 'EQ-AV',
-            quantity: ci.quantity,
-            unitSerialNumbers: [],
-          };
-        }),
+        contractSections,
+        notes: contract.isGeneric
+          ? `Albarán vinculado a Contrato Genérico ${contract.code}. Escanea los códigos QR del material físico en cada apartado (ej. Sonido) para verificar la salida.`
+          : `Albarán de salida generado automáticamente desde Contrato ${contract.code}. Material listo para verificación QR y salida.`,
+        items: contract.isGeneric
+          ? []
+          : contract.items.map((ci) => {
+              const matched = items.find(
+                (i) => i.id === ci.itemId || i.name.toLowerCase() === ci.itemName.toLowerCase()
+              );
+              return {
+                itemId: matched?.id || ci.itemId || `item-${ci.id}`,
+                itemName: ci.itemName,
+                itemCode: matched?.code || ci.itemCode || 'EQ-AV',
+                quantity: ci.quantity,
+                section: ci.section || ci.category || 'Sonido',
+                unitSerialNumbers: [],
+                verifiedByQr: false,
+              };
+            }),
         createdAt: now,
       };
 
@@ -1972,6 +2523,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     const contract: Contract = {
       id,
       code,
+      isGeneric: contractData.isGeneric,
       eventId: contractData.eventId,
       eventName: contractData.eventName,
       eventDate: contractData.eventDate || new Date().toISOString(),
@@ -2175,29 +2727,37 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       itemName: string;
       itemCode: string;
       quantity: number;
+      section?: string;
       unitSerialNumbers?: string[];
+      verifiedByQr?: boolean;
+      scannedQrCode?: string;
+      kitId?: string;
+      cableBoxId?: string;
+      kitComponentsSummary?: string;
     }
   ): Promise<void> => {
     const disp = dispatches.find((d) => d.id === dispatchId);
     if (!disp) return;
 
+    const now = new Date().toISOString();
     const it = items.find((i) => i.id === extraItem.itemId);
-    if (!it) return;
 
-    const availableToShip = it.totalQuantity - it.outQuantity - it.damagedQuantity;
-    if (extraItem.quantity > availableToShip) {
-      throw new Error(`Stock insuficiente para "${it.name}". Disponible en almacén: ${availableToShip}`);
+    if (it) {
+      const availableToShip = it.totalQuantity - it.outQuantity - it.damagedQuantity;
+      if (extraItem.quantity > availableToShip && !extraItem.verifiedByQr) {
+        throw new Error(`Stock insuficiente para "${it.name}". Disponible en almacén: ${availableToShip}`);
+      }
+
+      const newOut = Math.min(it.totalQuantity, it.outQuantity + extraItem.quantity);
+      const newAvail = Math.max(0, it.totalQuantity - newOut - it.damagedQuantity - it.reservedQuantity);
+      setItems((prev) =>
+        prev.map((item) =>
+          item.id === extraItem.itemId
+            ? { ...item, outQuantity: newOut, availableQuantity: newAvail, updatedAt: now }
+            : item
+        )
+      );
     }
-
-    const newOut = it.outQuantity + extraItem.quantity;
-    const newAvail = Math.max(0, it.totalQuantity - newOut - it.damagedQuantity - it.reservedQuantity);
-    setItems((prev) =>
-      prev.map((item) =>
-        item.id === extraItem.itemId
-          ? { ...item, outQuantity: newOut, availableQuantity: newAvail, updatedAt: new Date().toISOString() }
-          : item
-      )
-    );
 
     if (extraItem.unitSerialNumbers && extraItem.unitSerialNumbers.length > 0) {
       setItemUnits((prevUnits) =>
@@ -2209,45 +2769,167 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       );
     }
 
-    const existingIndex = disp.items.findIndex((i) => i.itemId === extraItem.itemId);
-    let updatedItems = [...disp.items];
+    const existingIndex = disp.items.findIndex(
+      (i) => i.itemId === extraItem.itemId && (i.section || 'Sonido') === (extraItem.section || i.section || 'Sonido')
+    );
+    const updatedItems = [...disp.items];
     if (existingIndex >= 0) {
       const existing = updatedItems[existingIndex];
       updatedItems[existingIndex] = {
         ...existing,
         quantity: existing.quantity + extraItem.quantity,
-        unitSerialNumbers: [
-          ...(existing.unitSerialNumbers || []),
-          ...(extraItem.unitSerialNumbers || []),
-        ],
+        unitSerialNumbers: Array.from(
+          new Set([...(existing.unitSerialNumbers || []), ...(extraItem.unitSerialNumbers || [])])
+        ),
+        verifiedByQr: extraItem.verifiedByQr || existing.verifiedByQr,
+        verifiedAt: extraItem.verifiedByQr ? now : existing.verifiedAt,
+        verifiedBy: extraItem.verifiedByQr ? userProfile?.name || 'Operario' : existing.verifiedBy,
+        scannedQrCode: extraItem.scannedQrCode || existing.scannedQrCode,
       };
     } else {
       updatedItems.push({
-        itemId: it.id,
-        itemName: it.name,
-        itemCode: it.code,
+        itemId: extraItem.itemId,
+        itemName: extraItem.itemName,
+        itemCode: extraItem.itemCode,
         quantity: extraItem.quantity,
+        section: extraItem.section || 'Sonido',
         unitSerialNumbers: extraItem.unitSerialNumbers,
+        verifiedByQr: extraItem.verifiedByQr,
+        verifiedAt: extraItem.verifiedByQr ? now : undefined,
+        verifiedBy: extraItem.verifiedByQr ? userProfile?.name || 'Operario' : undefined,
+        scannedQrCode: extraItem.scannedQrCode,
+        kitId: extraItem.kitId,
+        cableBoxId: extraItem.cableBoxId,
+        kitComponentsSummary: extraItem.kitComponentsSummary,
       });
     }
 
     await recordMovement({
       type: 'dispatch',
-      itemId: it.id,
-      itemName: it.name,
-      itemCode: it.code,
+      itemId: extraItem.itemId,
+      itemName: extraItem.itemName,
+      itemCode: extraItem.itemCode,
       quantity: extraItem.quantity,
-      sourceLocation: it.defaultLocationName,
-      targetLocation: `Albarán ${disp.code} (${disp.eventName})`,
+      sourceLocation: it?.defaultLocationName || 'Almacén Central',
+      targetLocation: `Albarán ${disp.code} [${extraItem.section || 'General'}]`,
       eventId: disp.eventId,
       eventName: disp.eventName,
-      reason: `Material extra/escaneado añadido al albarán ${disp.code}`,
+      reason: extraItem.verifiedByQr
+        ? `Verificación de salida con QR (${extraItem.scannedQrCode || extraItem.itemCode}) en apartado ${extraItem.section || 'General'}`
+        : `Material añadido al albarán ${disp.code}`,
       referenceCode: disp.code,
     });
 
     setDispatches((prev) =>
-      prev.map((d) => (d.id === dispatchId ? { ...d, items: updatedItems } : d))
+      prev.map((d) =>
+        d.id === dispatchId
+          ? {
+              ...d,
+              items: updatedItems,
+              preparedBy: userProfile?.name || d.preparedBy,
+            }
+          : d
+      )
     );
+  };
+
+  // Scan QR code directly into a Dispatch Note Section (e.g., Apartado "Sonido") to verify physical exit
+  const verifyDispatchLineByQr = async (
+    dispatchId: string,
+    section: string,
+    rawQrCode: string
+  ): Promise<{ label: string; kind: 'kit' | 'cable_box' | 'unit' | 'item' | 'custom' }> => {
+    const disp = dispatches.find((d) => d.id === dispatchId);
+    if (!disp) throw new Error('Albarán no encontrado');
+    const cleanCode = rawQrCode.trim();
+    if (!cleanCode) throw new Error('Código QR vacío');
+
+    const match = findUnitOrItemByCode(cleanCode, itemUnits, items, equipmentKits, cableBoxes, contracts);
+    const now = new Date().toISOString();
+
+    if (match.kit) {
+      const kit = match.kit;
+      const summary = kit.components.map((c) => `${c.quantity}x ${c.name}`).join(' • ');
+      await addItemToDispatch(dispatchId, {
+        itemId: kit.id,
+        itemName: `[QR CONJUNTO] ${kit.name}`,
+        itemCode: kit.code,
+        quantity: 1,
+        section: section || kit.section || 'Sonido',
+        verifiedByQr: true,
+        scannedQrCode: kit.qrCode,
+        kitId: kit.id,
+        kitComponentsSummary: summary,
+      });
+      setEquipmentKits((prev) =>
+        prev.map((k) =>
+          k.id === kit.id
+            ? { ...k, status: 'in_event', currentEventId: disp.eventId, currentEventName: disp.eventName, updatedAt: now }
+            : k
+        )
+      );
+      return { label: `${kit.name} (${kit.components.length} elementos)`, kind: 'kit' };
+    }
+
+    if (match.cableBox) {
+      const box = match.cableBox;
+      await addItemToDispatch(dispatchId, {
+        itemId: box.id,
+        itemName: `[CAJA CABLES] ${box.name} (${box.currentQuantity}/${box.initialQuantity} uds)`,
+        itemCode: box.code,
+        quantity: 1,
+        section: section || box.section || 'Cableado',
+        verifiedByQr: true,
+        scannedQrCode: box.qrCode,
+        cableBoxId: box.id,
+        kitComponentsSummary: `${box.currentQuantity} cables ${box.cableType} (${box.cableLength || 'Estándar'})`,
+      });
+      setCableBoxes((prev) =>
+        prev.map((b) => (b.id === box.id ? { ...b, status: 'in_event', updatedAt: now } : b))
+      );
+      return { label: `${box.name} — ${box.currentQuantity} cables`, kind: 'cable_box' };
+    }
+
+    if (match.unit) {
+      const unit = match.unit;
+      await addItemToDispatch(dispatchId, {
+        itemId: unit.itemId,
+        itemName: match.item?.name || unit.itemName,
+        itemCode: unit.itemCode,
+        quantity: 1,
+        section: section || 'Sonido',
+        unitSerialNumbers: [unit.serialNumber],
+        verifiedByQr: true,
+        scannedQrCode: unit.qrCode || unit.serialNumber,
+      });
+      return { label: `${unit.itemName} (N/S: ${unit.serialNumber})`, kind: 'unit' };
+    }
+
+    if (match.item) {
+      const it = match.item;
+      await addItemToDispatch(dispatchId, {
+        itemId: it.id,
+        itemName: it.name,
+        itemCode: it.code,
+        quantity: 1,
+        section: section || 'Sonido',
+        verifiedByQr: true,
+        scannedQrCode: it.qrCode || it.code,
+      });
+      return { label: `${it.name} (${it.code})`, kind: 'item' };
+    }
+
+    // Raw/external QR code attached directly to the section
+    await addItemToDispatch(dispatchId, {
+      itemId: `qr-ext-${Date.now()}`,
+      itemName: `Equipo verificado QR (${cleanCode})`,
+      itemCode: cleanCode,
+      quantity: 1,
+      section: section || 'Sonido',
+      verifiedByQr: true,
+      scannedQrCode: cleanCode,
+    });
+    return { label: `QR ${cleanCode}`, kind: 'custom' };
   };
 
   const reportDamageFromPurchase = async (
@@ -2418,6 +3100,8 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const seedInitialData = async () => {
     setItems(INITIAL_ITEMS);
     setItemUnits(INITIAL_UNITS);
+    setEquipmentKits(INITIAL_EQUIPMENT_KITS);
+    setCableBoxes(INITIAL_CABLE_BOXES);
     setCategories(INITIAL_CATEGORIES);
     setLocations(INITIAL_LOCATIONS);
     setEvents(INITIAL_EVENTS);
@@ -2426,7 +3110,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setMovements(INITIAL_MOVEMENTS);
     setClients(INITIAL_CLIENTS);
     setSuppliers(INITIAL_SUPPLIERS);
-    setDispatches([]);
+    setDispatches(INITIAL_DISPATCHES);
     setReturns([]);
     setPurchases([]);
     setInventorySessions([]);
@@ -2439,6 +3123,12 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       for (const ev of INITIAL_EVENTS) {
         await setDoc(doc(db, 'events', ev.id), ev);
       }
+      for (const kit of INITIAL_EQUIPMENT_KITS) {
+        await setDoc(doc(db, 'equipmentKits', kit.id), kit);
+      }
+      for (const box of INITIAL_CABLE_BOXES) {
+        await setDoc(doc(db, 'cableBoxes', box.id), box);
+      }
     } catch (e) {
       console.warn('Seeding to Firestore error:', e);
     }
@@ -2448,6 +3138,8 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const clearAllDemoData = async () => {
     setItems([]);
     setItemUnits([]);
+    setEquipmentKits([]);
+    setCableBoxes([]);
     setEvents([]);
     setEventItems([]);
     setIncidents([]);
@@ -2460,9 +3152,10 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setClients([]);
     setSuppliers([]);
 
-    // Clear local storage entries
     localStorage.setItem('prompt_maestro_items', JSON.stringify([]));
     localStorage.setItem('prompt_maestro_units', JSON.stringify([]));
+    localStorage.setItem('prompt_maestro_equipment_kits', JSON.stringify([]));
+    localStorage.setItem('prompt_maestro_cable_boxes', JSON.stringify([]));
     localStorage.setItem('prompt_maestro_events', JSON.stringify([]));
     localStorage.setItem('prompt_maestro_event_items', JSON.stringify([]));
     localStorage.setItem('prompt_maestro_incidents', JSON.stringify([]));
@@ -2475,23 +3168,13 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     localStorage.setItem('prompt_maestro_inventory_sessions', JSON.stringify([]));
     localStorage.setItem('prompt_maestro_contracts', JSON.stringify([]));
 
-    // Delete Firestore documents if connected
     try {
-      const itemsSnap = await getDocs(collection(db, 'items'));
-      for (const d of itemsSnap.docs) {
-        await deleteDoc(d.ref);
-      }
-      const eventsSnap = await getDocs(collection(db, 'events'));
-      for (const d of eventsSnap.docs) {
-        await deleteDoc(d.ref);
-      }
-      const unitsSnap = await getDocs(collection(db, 'itemUnits'));
-      for (const d of unitsSnap.docs) {
-        await deleteDoc(d.ref);
-      }
-      const contractsSnap = await getDocs(collection(db, 'contracts'));
-      for (const d of contractsSnap.docs) {
-        await deleteDoc(d.ref);
+      const collectionsToClear = ['items', 'events', 'itemUnits', 'contracts', 'equipmentKits', 'cableBoxes'];
+      for (const colName of collectionsToClear) {
+        const snap = await getDocs(collection(db, colName));
+        for (const d of snap.docs) {
+          await deleteDoc(d.ref);
+        }
       }
     } catch (e) {
       console.warn('Clearing Firestore collections warning:', e);
@@ -2516,15 +3199,31 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         purchases,
         inventorySessions,
         contracts,
+        equipmentKits,
+        cableBoxes,
+        backupConfig,
+        isBackupDue,
         companyFiscalConfig,
         defaultBankDetails,
         loading,
         isOfflineMode,
 
         saveItem,
+        updateItemPrice,
         archiveItem,
         saveItemUnit,
         importItemsFromSpreadsheet,
+
+        saveEquipmentKit,
+        deleteEquipmentKit,
+        saveCableBox,
+        deleteCableBox,
+        adjustCableBoxQuantity,
+
+        updateBackupConfig,
+        exportFullBackupJson,
+        exportContractsAndDispatchesArchive,
+        restoreFullBackupJson,
 
         saveCategory,
         saveLocation,
@@ -2540,6 +3239,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         saveDispatchSignature,
         removeItemFromDispatch,
         addItemToDispatch,
+        verifyDispatchLineByQr,
 
         createIncident,
         updateIncidentStatus,

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Truck,
   Plus,
@@ -20,22 +20,32 @@ import {
   PackagePlus,
   RotateCcw,
   Wrench,
+  Cable,
+  ScanLine,
+  X,
 } from 'lucide-react';
-import { DispatchNote, Item, ItemUnit } from '../../types/inventory.ts';
+import { CONTRACT_SECTIONS, DispatchNote, Item, ItemUnit } from '../../types/inventory.ts';
 import { useInventory } from '../../context/InventoryContext.tsx';
 import { useAuth } from '../../context/AuthContext.tsx';
 import { TabletSignatureModal } from './TabletSignatureModal.tsx';
 import { QrPhotoScannerModal } from '../maintenance/QrPhotoScannerModal.tsx';
 import { DirectDamageReportModal } from '../maintenance/DirectDamageReportModal.tsx';
+import { MobileScannerModal } from '../scanner/MobileScannerModal.tsx';
+import { findUnitOrItemByCode, ScannedMatchResult } from '../../lib/qrScannerUtils.ts';
+import { Smartphone } from 'lucide-react';
 
 interface DispatchesViewProps {
   initialEventId?: string | null;
   onClearInitialEvent?: () => void;
+  onOpenRemoteLinkModal?: () => void;
+  isMobileScannerOnline?: boolean;
 }
 
 export const DispatchesView: React.FC<DispatchesViewProps> = ({
   initialEventId,
   onClearInitialEvent,
+  onOpenRemoteLinkModal,
+  isMobileScannerOnline = false,
 }) => {
   const {
     events,
@@ -43,10 +53,13 @@ export const DispatchesView: React.FC<DispatchesViewProps> = ({
     items,
     itemUnits,
     dispatches,
+    equipmentKits,
+    cableBoxes,
+    contracts,
     processDispatch,
     saveDispatchSignature,
     removeItemFromDispatch,
-    addItemToDispatch,
+    verifyDispatchLineByQr,
   } = useInventory();
   const { userProfile, canAuthorizeDispatches } = useAuth();
 
@@ -87,6 +100,183 @@ export const DispatchesView: React.FC<DispatchesViewProps> = ({
 
   // Manage existing dispatch items modal
   const [manageDispatch, setManageDispatch] = useState<DispatchNote | null>(null);
+
+  // QR Verification by Contract Section (Apartado) Modal
+  const [verifyDispatchId, setVerifyDispatchId] = useState<string | null>(null);
+  const [verifySection, setVerifySection] = useState<string>('Sonido');
+  const [verifyQrInput, setVerifyQrInput] = useState<string>('');
+  const [verifyCameraOpen, setVerifyCameraOpen] = useState(false);
+  const [verifyFeedback, setVerifyFeedback] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+
+  const liveVerifyDispatch = verifyDispatchId
+    ? dispatches.find((d) => d.id === verifyDispatchId) || null
+    : null;
+  const liveNoteToPrint = noteToPrint
+    ? dispatches.find((d) => d.id === noteToPrint.id) || noteToPrint
+    : null;
+
+  const openVerifyModal = (disp: DispatchNote) => {
+    setVerifyDispatchId(disp.id);
+    const defaultSec =
+      disp.contractSections?.[0]?.section ||
+      disp.items.find((i) => i.section)?.section ||
+      'Sonido';
+    setVerifySection(defaultSec);
+    setVerifyQrInput('');
+    setVerifyFeedback(null);
+  };
+
+  const handleVerifyQrCode = async (rawCode: string) => {
+    if (!liveVerifyDispatch || !rawCode.trim()) return;
+    try {
+      const res = await verifyDispatchLineByQr(liveVerifyDispatch.id, verifySection, rawCode.trim());
+      setVerifyFeedback({
+        type: 'ok',
+        text: `Verificado por QR en [${verifySection}]: ${res.label}`,
+      });
+      setVerifyQrInput('');
+    } catch (err: any) {
+      setVerifyFeedback({
+        type: 'err',
+        text: err?.message || 'Error al verificar código QR en el albarán.',
+      });
+    }
+  };
+
+  // Add any scanned QR (individual item, unit N/S, composite kit, or cable box) directly into the open draft albarán
+  const handleAddScannedCodeToDraft = (rawCode: string, sourceLabel = 'tu móvil') => {
+    const clean = rawCode.trim();
+    if (!clean) return;
+    setDispatchError(null);
+
+    const match = findUnitOrItemByCode(
+      clean,
+      itemUnits,
+      items,
+      equipmentKits,
+      cableBoxes,
+      contracts
+    );
+
+    if (match.kit) {
+      let addedCount = 0;
+      setDispatchLines((prev) => {
+        const next = { ...prev };
+        match.kit!.components.forEach((comp) => {
+          const catalogItem =
+            items.find((i) => i.id === comp.itemId) ||
+            items.find((i) => comp.itemCode && i.code.toLowerCase() === comp.itemCode.toLowerCase()) ||
+            items.find((i) => i.name.toLowerCase().includes(comp.name.toLowerCase()));
+          if (!catalogItem) return;
+          const existing = next[catalogItem.id];
+          next[catalogItem.id] = {
+            itemId: catalogItem.id,
+            itemName: catalogItem.name,
+            itemCode: catalogItem.code,
+            quantity: (existing?.quantity || 0) + (comp.quantity || 1),
+            unitSerialNumbers: existing ? existing.unitSerialNumbers : [],
+            isExtra: !selectedEventLines.some((l) => l.itemId === catalogItem.id),
+          };
+          addedCount += comp.quantity || 1;
+        });
+        return next;
+      });
+      if (addedCount > 0) {
+        setScanSuccessMessage(
+          `📱 Añadido desde ${sourceLabel}: QR Conjunto «${match.kit.name}» (${addedCount} equipos añadidos al albarán).`
+        );
+        setTimeout(() => setScanSuccessMessage(null), 4000);
+      } else {
+        setDispatchError(
+          `QR Conjunto «${match.kit.name}» detectado, pero sus componentes no están vinculados a artículos del catálogo.`
+        );
+      }
+      return;
+    }
+
+    if (match.cableBox) {
+      const box = match.cableBox;
+      const catalogItem =
+        items.find((i) => i.name.toLowerCase().includes(box.cableType.toLowerCase())) ||
+        items.find((i) => i.name.toLowerCase().includes(box.name.toLowerCase())) ||
+        items.find((i) => i.category.toLowerCase().includes('cable'));
+
+      if (catalogItem) {
+        setDispatchLines((prev) => {
+          const existing = prev[catalogItem.id];
+          return {
+            ...prev,
+            [catalogItem.id]: {
+              itemId: catalogItem.id,
+              itemName: catalogItem.name,
+              itemCode: catalogItem.code,
+              quantity: (existing?.quantity || 0) + Math.max(1, box.currentQuantity),
+              unitSerialNumbers: existing ? existing.unitSerialNumbers : [],
+              isExtra: !selectedEventLines.some((l) => l.itemId === catalogItem.id),
+            },
+          };
+        });
+        setScanSuccessMessage(
+          `📱 Añadido desde ${sourceLabel}: Caja «${box.name}» (${box.currentQuantity} uds de ${catalogItem.name}).`
+        );
+        setTimeout(() => setScanSuccessMessage(null), 4000);
+      } else {
+        setDispatchError(
+          `Caja de cables «${box.name}» escaneada. Para verificar cajas exactas por apartado usa "Verificar Salida QR".`
+        );
+      }
+      return;
+    }
+
+    const targetItem = match.item || items.find((i) => i.id === match.unit?.itemId);
+    if (!targetItem) {
+      setDispatchError(`QR «${clean}» recibido desde ${sourceLabel}, pero no coincide con ningún artículo del catálogo.`);
+      return;
+    }
+
+    const serialNumber = match.unit?.serialNumber || '';
+    setDispatchLines((prev) => {
+      const existing = prev[targetItem.id];
+      const serials = existing ? [...existing.unitSerialNumbers] : [];
+      if (serialNumber && !serials.includes(serialNumber)) {
+        serials.push(serialNumber);
+      }
+      return {
+        ...prev,
+        [targetItem.id]: {
+          itemId: targetItem.id,
+          itemName: targetItem.name,
+          itemCode: targetItem.code,
+          quantity: (existing?.quantity || 0) + 1,
+          unitSerialNumbers: serials,
+          isExtra: !selectedEventLines.some((l) => l.itemId === targetItem.id),
+        },
+      };
+    });
+
+    setScanSuccessMessage(
+      `📱 Añadido al albarán desde ${sourceLabel}: ${targetItem.name}${serialNumber ? ` (N/S: ${serialNumber})` : ''} (+1)`
+    );
+    setTimeout(() => setScanSuccessMessage(null), 4000);
+  };
+
+  // Automatically receive live scans sent from the user's linked mobile scanner (?scanner=remote)
+  useEffect(() => {
+    if (!liveVerifyDispatch && !isModalOpen) return;
+    const onRemoteQrScan = (event: Event) => {
+      const custom = event as CustomEvent<{ code?: string }>;
+      const code = custom.detail?.code;
+      if (!code) return;
+      event.preventDefault();
+      if (liveVerifyDispatch) {
+        handleVerifyQrCode(code);
+      } else if (isModalOpen) {
+        handleAddScannedCodeToDraft(code, 'tu móvil');
+      }
+    };
+    window.addEventListener('jd-remote-qr-scan', onRemoteQrScan);
+    return () => window.removeEventListener('jd-remote-qr-scan', onRemoteQrScan);
+  }, [liveVerifyDispatch?.id, verifySection, isModalOpen, items, itemUnits, equipmentKits, cableBoxes, contracts, selectedEventId]);
 
   const selectedEvent = events.find((e) => e.id === selectedEventId);
   const selectedEventLines = eventItems.filter((l) => l.eventId === selectedEventId);
@@ -347,6 +537,14 @@ export const DispatchesView: React.FC<DispatchesViewProps> = ({
                         <span>Firmado en Tablet ({disp.signerName})</span>
                       </span>
                     )}
+                    {disp.items.some((i) => i.verifiedByQr) && (
+                      <span className="text-[10px] px-2 py-0.5 rounded-full font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 flex items-center gap-1">
+                        <QrCode className="w-3 h-3 text-emerald-400" />
+                        <span>
+                          {disp.items.filter((i) => i.verifiedByQr).length} QR Verificados
+                        </span>
+                      </span>
+                    )}
                   </div>
                   <h3 className="font-bold text-white text-sm mt-0.5">{disp.eventName}</h3>
                   <div className="text-xs text-zinc-400 flex flex-wrap items-center gap-2 mt-1">
@@ -363,16 +561,48 @@ export const DispatchesView: React.FC<DispatchesViewProps> = ({
                     <span>•</span>
                     <span>Preparado por: {disp.preparedBy}</span>
                   </div>
+                  {disp.contractSections && disp.contractSections.length > 0 && (
+                    <div className="flex flex-wrap items-center gap-1.5 mt-2">
+                      <span className="text-[10px] text-zinc-500 uppercase font-mono">Apartados contrato:</span>
+                      {Array.from(new Set(disp.contractSections.map((s) => s.section))).map((sec) => {
+                        const verifiedCount = disp.items.filter(
+                          (it) => it.section === sec && it.verifiedByQr
+                        ).length;
+                        return (
+                          <span
+                            key={sec}
+                            className={`text-[10px] px-2 py-0.5 rounded font-semibold border ${
+                              verifiedCount > 0
+                                ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                                : 'bg-cyan-500/10 text-cyan-300 border-cyan-500/30'
+                            }`}
+                          >
+                            {sec} {verifiedCount > 0 ? `(${verifiedCount} QR ✓)` : ''}
+                          </span>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               </div>
 
-              <div className="flex flex-wrap items-center gap-3 text-xs">
+              <div className="flex flex-wrap items-center gap-2.5 text-xs">
                 <div>
                   <span className="text-[10px] text-zinc-500 block uppercase font-mono">Bultos / Unidades</span>
                   <span className="text-white font-mono font-bold">
                     {disp.items.reduce((acc, i) => acc + i.quantity, 0)} uds
                   </span>
                 </div>
+
+                {/* Verify Dispatch Exit with QR per Section */}
+                <button
+                  onClick={() => openVerifyModal(disp)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-500/40 font-bold transition cursor-pointer"
+                  title="Escanear códigos QR de carros, cajas de cables o equipos bajo cada apartado del contrato (ej. Sonido) para verificar salida"
+                >
+                  <QrCode className="w-3.5 h-3.5" />
+                  <span>Verificar Salida QR</span>
+                </button>
 
                 {disp.status === 'preparing' && (
                   <button
@@ -472,15 +702,32 @@ export const DispatchesView: React.FC<DispatchesViewProps> = ({
                 </select>
               </div>
 
-              {/* Barcode / QR Scan Button inside Dispatch */}
-              <div className="p-3 rounded-xl bg-linear-to-r from-cyan-950/30 to-amber-950/20 border border-cyan-500/30 flex flex-col sm:flex-row items-center justify-between gap-3">
+              {/* Barcode / QR Scan Box inside Dispatch Creation */}
+              <div
+                className={`p-3 rounded-xl border flex flex-col sm:flex-row items-center justify-between gap-3 ${
+                  isMobileScannerOnline
+                    ? 'bg-emerald-950/25 border-emerald-500/40'
+                    : 'bg-linear-to-r from-cyan-950/30 to-amber-950/20 border-cyan-500/30'
+                }`}
+              >
                 <div>
-                  <span className="font-bold text-white text-xs block flex items-center gap-1.5">
-                    <Camera className="w-4 h-4 text-cyan-400" />
-                    ¿Quieres escanear material directamente con la cámara?
+                  <span className="font-bold text-white text-xs flex items-center gap-1.5">
+                    {isMobileScannerOnline ? (
+                      <>
+                        <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+                        <span className="text-emerald-300">
+                          Escáner móvil activo — lee cualquier QR y se añadirá directo aquí
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <Camera className="w-4 h-4 text-cyan-400" />
+                        <span>¿Quieres añadir artículos escaneando QR?</span>
+                      </>
+                    )}
                   </span>
-                  <span className="text-[11px] text-zinc-400">
-                    Añade cualquier equipo o número de serie escaneando el código QR, incluso si no estaba en el rider inicial.
+                  <span className="text-[11px] text-zinc-400 block mt-0.5">
+                    Escanea directamente desde tu móvil (si tienes tu enlace abierto) o con la cámara de este equipo.
                   </span>
                 </div>
                 <button
@@ -778,8 +1025,294 @@ export const DispatchesView: React.FC<DispatchesViewProps> = ({
         </div>
       )}
 
+      {/* Verify Dispatch Exit with QR by Section (Apartado) Modal */}
+      {liveVerifyDispatch && (
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto no-print">
+          <div className="bg-[#161b22] border border-cyan-500/40 rounded-2xl w-full max-w-3xl max-h-[92vh] flex flex-col shadow-2xl overflow-hidden">
+            {/* Header */}
+            <div className="p-4 border-b border-[#30363d] flex items-center justify-between bg-linear-to-r from-cyan-950/30 via-[#161b22] to-[#161b22]">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 flex items-center justify-center">
+                  <ScanLine className="w-5 h-5" />
+                </div>
+                <div>
+                  <h2 className="text-sm sm:text-base font-bold text-white">
+                    Verificación de Salida por QR — {liveVerifyDispatch.code}
+                  </h2>
+                  <p className="text-[11px] text-zinc-400">
+                    {liveVerifyDispatch.eventName} • {liveVerifyDispatch.clientName}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setVerifyDispatchId(null)}
+                className="p-1.5 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-5 overflow-y-auto space-y-4 text-xs flex-1">
+              {verifyFeedback && (
+                <div
+                  className={`p-3 rounded-xl border flex items-center gap-2 font-semibold ${
+                    verifyFeedback.type === 'ok'
+                      ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                      : 'bg-rose-500/15 border-rose-500/40 text-rose-300'
+                  }`}
+                >
+                  {verifyFeedback.type === 'ok' ? (
+                    <CheckCircle2 className="w-4 h-4 shrink-0" />
+                  ) : (
+                    <AlertTriangle className="w-4 h-4 shrink-0" />
+                  )}
+                  <span>{verifyFeedback.text}</span>
+                </div>
+              )}
+
+              {/* Step 1: Select Apartado (from contract sections or standard list) */}
+              <div className="p-3.5 rounded-xl bg-[#0d1117] border border-[#30363d] space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-cyan-300 uppercase tracking-wider text-[10px]">
+                    1. Selecciona el Apartado del Albarán (ej. Sonido, Iluminación...)
+                  </span>
+                  <span className="text-[10px] text-zinc-400">
+                    Apartado activo: <strong className="text-white">{verifySection}</strong>
+                  </span>
+                </div>
+
+                {liveVerifyDispatch.contractSections && liveVerifyDispatch.contractSections.length > 0 && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {liveVerifyDispatch.contractSections.map((cs, idx) => {
+                      const active = verifySection === cs.section;
+                      const count = liveVerifyDispatch.items.filter(
+                        (it) => it.section === cs.section && it.verifiedByQr
+                      ).length;
+                      return (
+                        <button
+                          key={`${cs.section}-${idx}`}
+                          type="button"
+                          onClick={() => setVerifySection(cs.section)}
+                          className={`p-2.5 rounded-xl border text-left transition cursor-pointer ${
+                            active
+                              ? 'bg-cyan-500/20 border-cyan-400 text-white shadow-sm'
+                              : 'bg-[#161b22] border-[#30363d] text-zinc-300 hover:border-zinc-500'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-bold text-cyan-300 text-xs">{cs.section}</span>
+                            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300">
+                              {count} QR ✓
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-zinc-400 mt-0.5 line-clamp-2">
+                            {cs.description} {cs.quantity > 1 ? `(×${cs.quantity})` : ''}
+                          </p>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+
+                <div className="flex flex-wrap gap-1.5 pt-1">
+                  {CONTRACT_SECTIONS.map((sec) => (
+                    <button
+                      key={sec}
+                      type="button"
+                      onClick={() => setVerifySection(sec)}
+                      className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition cursor-pointer ${
+                        verifySection === sec
+                          ? 'bg-amber-500 text-black border-amber-400 font-bold'
+                          : 'bg-[#161b22] text-zinc-400 border-[#30363d] hover:text-white'
+                      }`}
+                    >
+                      {sec}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Step 2: Scan QR via Camera, Scanner Gun or Quick-Pick Kit/Cable Box */}
+              <div className="p-3.5 rounded-xl bg-cyan-950/20 border border-cyan-500/30 space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <div>
+                    <span className="font-bold text-white block">
+                      2. Escanea el QR que sale dentro de «{verifySection}»
+                    </span>
+                    <span className="text-[11px] text-zinc-400">
+                      Admite QR conjuntos (Carros), Cajas de Cables, Unidades N/S o Artículos individuales.
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setVerifyCameraOpen(true)}
+                    className="flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-black font-bold text-xs shrink-0 cursor-pointer shadow-md"
+                  >
+                    <Camera className="w-4 h-4" />
+                    <span>Escanear con Cámara</span>
+                  </button>
+                </div>
+
+                {/* Keyboard / USB QR Gun Input */}
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    handleVerifyQrCode(verifyQrInput);
+                  }}
+                  className="flex gap-2"
+                >
+                  <input
+                    type="text"
+                    value={verifyQrInput}
+                    onChange={(e) => setVerifyQrInput(e.target.value)}
+                    placeholder="Escanea con pistola QR o escribe código (ej. QR-KIT-SONIDO-01, QR-CAB-XLR4M-01)..."
+                    className="flex-1 bg-[#0d1117] border border-[#30363d] focus:border-cyan-400 rounded-xl px-3 py-2 text-zinc-100 font-mono text-xs focus:outline-none"
+                  />
+                  <button
+                    type="submit"
+                    disabled={!verifyQrInput.trim()}
+                    className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white font-bold text-xs cursor-pointer"
+                  >
+                    Verificar QR
+                  </button>
+                </form>
+
+                {/* Quick-pick Kits & Cable Boxes */}
+                {(equipmentKits.length > 0 || cableBoxes.length > 0) && (
+                  <div className="space-y-2 pt-2 border-t border-cyan-500/20">
+                    <span className="text-[10px] text-zinc-400 uppercase font-mono block">
+                      Selección rápida de QR Conjuntos / Carros y Cajas de Cables:
+                    </span>
+                    <div className="flex flex-wrap gap-1.5">
+                      {equipmentKits.map((kit) => (
+                        <button
+                          key={kit.id}
+                          type="button"
+                          onClick={() => handleVerifyQrCode(kit.qrCode)}
+                          className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 text-amber-200 border border-amber-500/30 text-[11px] font-semibold cursor-pointer"
+                          title={`Añadir y verificar ${kit.name} bajo ${verifySection}`}
+                        >
+                          <Boxes className="w-3 h-3 text-amber-400" />
+                          <span>{kit.name}</span>
+                        </button>
+                      ))}
+                      {cableBoxes.map((box) => (
+                        <button
+                          key={box.id}
+                          type="button"
+                          onClick={() => handleVerifyQrCode(box.qrCode)}
+                          className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-200 border border-cyan-500/30 text-[11px] font-semibold cursor-pointer"
+                          title={`Añadir y verificar ${box.name} (${box.currentQuantity} cables) bajo ${verifySection}`}
+                        >
+                          <Cable className="w-3 h-3 text-cyan-400" />
+                          <span>
+                            {box.name} ({box.currentQuantity}/{box.initialQuantity})
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Step 3: Material loaded & QR-verified in this Dispatch grouped by Section */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-white">
+                    3. Material Cargado y Verificado en el Albarán ({liveVerifyDispatch.items.length} partidas)
+                  </span>
+                  <span className="text-[11px] text-emerald-400 font-semibold">
+                    {liveVerifyDispatch.items.filter((i) => i.verifiedByQr).length} verificadas con QR
+                  </span>
+                </div>
+
+                {liveVerifyDispatch.items.length === 0 ? (
+                  <div className="p-6 text-center rounded-xl bg-[#0d1117] border border-[#30363d] text-zinc-500">
+                    Aún no hay equipos escaneados en este albarán. Selecciona un apartado arriba (ej. Sonido) y escanea los QR de salida.
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {liveVerifyDispatch.items.map((it, idx) => (
+                      <div
+                        key={`${it.itemId}-${it.scannedQrCode || idx}`}
+                        className={`p-3 rounded-xl border flex items-start justify-between gap-3 ${
+                          it.verifiedByQr
+                            ? 'bg-emerald-950/15 border-emerald-500/30'
+                            : 'bg-[#0d1117] border-[#30363d]'
+                        }`}
+                      >
+                        <div className="space-y-1 min-w-0">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">
+                              {it.section || 'General'}
+                            </span>
+                            <span className="font-mono font-bold text-amber-400">{it.itemCode}</span>
+                            <span className="font-bold text-white">{it.itemName}</span>
+                            <span className="text-[11px] font-mono text-zinc-300">×{it.quantity}</span>
+                            {it.verifiedByQr && (
+                              <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                                <CheckCircle2 className="w-3 h-3" />
+                                Verificado QR
+                              </span>
+                            )}
+                          </div>
+                          {it.kitComponentsSummary && (
+                            <p className="text-[11px] text-zinc-300 bg-[#0d1117]/80 px-2.5 py-1 rounded border border-[#30363d]">
+                              Contenido: {it.kitComponentsSummary}
+                            </p>
+                          )}
+                          {it.scannedQrCode && (
+                            <div className="text-[10px] text-zinc-400 font-mono">
+                              QR: {it.scannedQrCode}
+                              {it.verifiedBy ? ` • Verificado por ${it.verifiedBy}` : ''}
+                            </div>
+                          )}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            removeItemFromDispatch(liveVerifyDispatch.id, it.itemId, it.quantity)
+                          }
+                          className="p-1.5 rounded-lg text-zinc-500 hover:text-rose-400 hover:bg-rose-500/10 cursor-pointer shrink-0"
+                          title="Quitar línea del albarán"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="p-3.5 border-t border-[#30363d] bg-[#0d1117] flex items-center justify-between">
+              <button
+                type="button"
+                onClick={() => {
+                  const current = liveVerifyDispatch;
+                  setVerifyDispatchId(null);
+                  setNoteToPrint(current);
+                }}
+                className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-black font-bold text-xs cursor-pointer"
+              >
+                <Printer className="w-3.5 h-3.5" />
+                <span>Ver / Imprimir Albarán Verificado</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setVerifyDispatchId(null)}
+                className="px-4 py-2 rounded-xl border border-[#30363d] hover:bg-zinc-800 text-zinc-300 text-xs font-semibold cursor-pointer"
+              >
+                Finalizar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Printable Delivery Note (Albarán de Salida Imprimible) */}
-      {noteToPrint && (
+      {liveNoteToPrint && (
         <div className="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-4 overflow-y-auto">
           <div className="bg-white text-zinc-900 rounded-2xl w-full max-w-3xl p-8 space-y-6 shadow-2xl printable-document">
             {/* Top Bar for Screen */}
@@ -787,11 +1320,22 @@ export const DispatchesView: React.FC<DispatchesViewProps> = ({
               <span className="font-bold text-lg text-zinc-800">Albarán Oficial de Salida de Material</span>
               <div className="flex items-center gap-2">
                 <button
-                  onClick={() => setSignatureDispatch(noteToPrint)}
+                  onClick={() => {
+                    const target = liveNoteToPrint;
+                    setNoteToPrint(null);
+                    openVerifyModal(target);
+                  }}
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs shadow-md transition cursor-pointer"
+                >
+                  <QrCode className="w-3.5 h-3.5" />
+                  <span>Verificar con QR</span>
+                </button>
+                <button
+                  onClick={() => setSignatureDispatch(liveNoteToPrint)}
                   className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-md transition cursor-pointer"
                 >
                   <PenTool className="w-3.5 h-3.5" />
-                  <span>{noteToPrint.clientSignatureUrl ? 'Cambiar Firma Tablet' : 'Firmar en Tablet'}</span>
+                  <span>{liveNoteToPrint.clientSignatureUrl ? 'Cambiar Firma Tablet' : 'Firmar en Tablet'}</span>
                 </button>
                 <button
                   onClick={() => window.print()}
@@ -827,9 +1371,9 @@ export const DispatchesView: React.FC<DispatchesViewProps> = ({
                 </div>
               </div>
               <div className="text-right">
-                <div className="font-mono font-black text-2xl text-amber-600 tracking-tight">{noteToPrint.code}</div>
+                <div className="font-mono font-black text-2xl text-amber-600 tracking-tight">{liveNoteToPrint.code}</div>
                 <div className="text-xs font-semibold text-zinc-600 mt-1">
-                  Fecha: {new Date(noteToPrint.dispatchDate).toLocaleDateString('es-ES')} - {new Date(noteToPrint.dispatchDate).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  Fecha: {new Date(liveNoteToPrint.dispatchDate).toLocaleDateString('es-ES')} - {new Date(liveNoteToPrint.dispatchDate).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                 </div>
               </div>
             </div>
@@ -838,37 +1382,76 @@ export const DispatchesView: React.FC<DispatchesViewProps> = ({
             <div className="grid grid-cols-2 gap-4 p-4 rounded-xl bg-zinc-50 border text-xs">
               <div>
                 <span className="text-[10px] uppercase font-bold text-zinc-400 block font-mono">Evento / Producción</span>
-                <span className="font-bold text-sm text-zinc-900 block">{noteToPrint.eventName}</span>
-                <span className="text-zinc-600">Código Evento: {noteToPrint.eventCode}</span>
+                <span className="font-bold text-sm text-zinc-900 block">{liveNoteToPrint.eventName}</span>
+                <span className="text-zinc-600">Código Evento: {liveNoteToPrint.eventCode}</span>
               </div>
               <div>
                 <span className="text-[10px] uppercase font-bold text-zinc-400 block font-mono">Cliente / Productora</span>
-                <span className="font-bold text-sm text-zinc-900 block">{noteToPrint.clientName}</span>
-                <span className="text-zinc-600">Preparado por: {noteToPrint.preparedBy}</span>
+                <span className="font-bold text-sm text-zinc-900 block">{liveNoteToPrint.clientName}</span>
+                <span className="text-zinc-600">Preparado por: {liveNoteToPrint.preparedBy}</span>
               </div>
             </div>
+
+            {/* Generic Contract Sections Summary if present */}
+            {liveNoteToPrint.contractSections && liveNoteToPrint.contractSections.length > 0 && (
+              <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-xs space-y-1">
+                <span className="text-[10px] uppercase font-bold text-amber-800 font-mono block">
+                  Apartados Contratados (Verificados por QR abajo)
+                </span>
+                <div className="flex flex-wrap gap-2">
+                  {liveNoteToPrint.contractSections.map((cs, i) => (
+                    <span key={i} className="text-[11px] bg-white border border-amber-200 px-2 py-0.5 rounded text-zinc-800">
+                      <strong>{cs.section}:</strong> {cs.description}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* Table of Dispatched Gear */}
             <div>
               <table className="w-full text-left text-xs border">
                 <thead className="bg-zinc-100 font-bold border-b text-[11px] font-mono">
                   <tr>
-                    <th className="py-2.5 px-3">Código</th>
-                    <th className="py-2.5 px-3">Artículo / Descripción</th>
-                    <th className="py-2.5 px-3 text-center">Cantidad</th>
-                    <th className="py-2.5 px-3">Números de Serie / QR</th>
+                    <th className="py-2.5 px-3">Apartado / Cód.</th>
+                    <th className="py-2.5 px-3">Artículo / Conjunto / Descripción</th>
+                    <th className="py-2.5 px-3 text-center">Cant.</th>
+                    <th className="py-2.5 px-3">Verificación QR / N/S</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y">
-                  {noteToPrint.items.map((it, idx) => (
+                  {liveNoteToPrint.items.map((it, idx) => (
                     <tr key={idx}>
-                      <td className="py-2.5 px-3 font-mono font-bold text-zinc-800">{it.itemCode}</td>
-                      <td className="py-2.5 px-3 font-semibold text-zinc-900">{it.itemName}</td>
+                      <td className="py-2.5 px-3">
+                        {it.section && (
+                          <span className="inline-block text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-zinc-200 text-zinc-800 mb-0.5">
+                            {it.section}
+                          </span>
+                        )}
+                        <div className="font-mono font-bold text-zinc-800">{it.itemCode}</div>
+                      </td>
+                      <td className="py-2.5 px-3">
+                        <div className="font-semibold text-zinc-900">{it.itemName}</div>
+                        {it.kitComponentsSummary && (
+                          <div className="text-[10px] text-zinc-600 mt-0.5">
+                            Contenido: {it.kitComponentsSummary}
+                          </div>
+                        )}
+                      </td>
                       <td className="py-2.5 px-3 text-center font-mono font-bold text-zinc-900">{it.quantity}</td>
                       <td className="py-2.5 px-3 font-mono text-[11px] text-zinc-600">
-                        {it.unitSerialNumbers && it.unitSerialNumbers.length > 0
-                          ? it.unitSerialNumbers.join(', ')
-                          : '—'}
+                        {it.verifiedByQr && (
+                          <span className="inline-block text-[10px] font-bold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 border border-emerald-300 mb-0.5">
+                            ✓ VERIFICADO QR
+                          </span>
+                        )}
+                        <div>
+                          {it.scannedQrCode
+                            ? it.scannedQrCode
+                            : it.unitSerialNumbers && it.unitSerialNumbers.length > 0
+                            ? it.unitSerialNumbers.join(', ')
+                            : '—'}
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -876,16 +1459,16 @@ export const DispatchesView: React.FC<DispatchesViewProps> = ({
               </table>
             </div>
 
-            {noteToPrint.notes && (
+            {liveNoteToPrint.notes && (
               <div className="text-xs text-zinc-600 border-t pt-2">
-                <strong>Observaciones de Salida:</strong> {noteToPrint.notes}
+                <strong>Observaciones de Salida:</strong> {liveNoteToPrint.notes}
               </div>
             )}
 
             {/* Signatures Footer with Digital Tablet Stamp */}
             <div className="grid grid-cols-2 gap-8 pt-6 border-t text-xs">
               <div className="border p-4 rounded text-center h-32 flex flex-col justify-between">
-                <span className="font-semibold text-zinc-700">Entregado por (Almacén): {noteToPrint.authorizedBy}</span>
+                <span className="font-semibold text-zinc-700">Entregado por (Almacén): {liveNoteToPrint.authorizedBy}</span>
                 <div className="border-t border-dashed border-zinc-300 pt-1 text-[10px] text-zinc-400">
                   Firma autorizada de almacén
                 </div>
@@ -896,23 +1479,23 @@ export const DispatchesView: React.FC<DispatchesViewProps> = ({
                   Recibido por (Transporte / Técnico Responsable)
                 </span>
 
-                {noteToPrint.clientSignatureUrl ? (
+                {liveNoteToPrint.clientSignatureUrl ? (
                   <div className="my-auto">
                     <img
-                      src={noteToPrint.clientSignatureUrl}
+                      src={liveNoteToPrint.clientSignatureUrl}
                       alt="Firma digital en tablet"
                       className="h-14 max-w-full object-contain mx-auto"
                     />
                     <div className="text-[10px] text-zinc-600 font-mono">
-                      {noteToPrint.signerName || noteToPrint.clientName}{' '}
-                      {noteToPrint.signerDni ? `• DNI: ${noteToPrint.signerDni}` : ''}
+                      {liveNoteToPrint.signerName || liveNoteToPrint.clientName}{' '}
+                      {liveNoteToPrint.signerDni ? `• DNI: ${liveNoteToPrint.signerDni}` : ''}
                     </div>
                   </div>
                 ) : (
                   <div className="my-auto py-2">
                     <button
                       type="button"
-                      onClick={() => setSignatureDispatch(noteToPrint)}
+                      onClick={() => setSignatureDispatch(liveNoteToPrint)}
                       className="px-3 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-800 border border-amber-500/40 rounded text-[11px] font-bold no-print inline-flex items-center gap-1 cursor-pointer"
                     >
                       <PenTool className="w-3 h-3" /> Firmar en Tablet
@@ -951,6 +1534,16 @@ export const DispatchesView: React.FC<DispatchesViewProps> = ({
           clientName={signatureDispatch.clientName}
         />
       )}
+
+      {/* Camera QR Scanner for Dispatch Section Verification */}
+      <MobileScannerModal
+        isOpen={verifyCameraOpen}
+        onClose={() => setVerifyCameraOpen(false)}
+        onQrResolved={(match: ScannedMatchResult) => {
+          setVerifyCameraOpen(false);
+          handleVerifyQrCode(match.rawText);
+        }}
+      />
 
       {/* Direct Damage Report Modal to SAT */}
       <DirectDamageReportModal

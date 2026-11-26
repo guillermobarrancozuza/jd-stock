@@ -17,13 +17,14 @@ import {
   Menu,
   X as XIcon,
   Camera,
+  HardDrive,
+  Building2,
   Smartphone,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.tsx';
 import { useInventory } from '../../context/InventoryContext.tsx';
 import { UserRole } from '../../types/inventory.ts';
 import { AdminLoginModal } from '../auth/AdminLoginModal.tsx';
-import { PWAInstallButton } from '../pwa/PWAInstallButton.tsx';
 
 interface NavbarProps {
   onNavigate: (view: string) => void;
@@ -33,7 +34,9 @@ interface NavbarProps {
   onToggleMobileMenu?: () => void;
   isMobileMenuOpen?: boolean;
   onOpenScanner?: () => void;
-  onOpenMobileAppModal?: () => void;
+  onOpenBackupModal?: () => void;
+  onOpenRemoteLinkModal?: () => void;
+  isMobileScannerOnline?: boolean;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -44,12 +47,17 @@ export const Navbar: React.FC<NavbarProps> = ({
   onToggleMobileMenu,
   isMobileMenuOpen,
   onOpenScanner,
-  onOpenMobileAppModal,
+  onOpenBackupModal,
+  onOpenRemoteLinkModal,
+  isMobileScannerOnline,
 }) => {
-  const { currentUser, userProfile, isAdmin, loginWithGoogle, logout } = useAuth();
-  const { events, incidents, items } = useInventory();
+  const { currentUser, userProfile, isAdmin, allUsers, logout } = useAuth();
+  const { events, incidents, items, isBackupDue, backupConfig } = useInventory();
   const [showAdminModal, setShowAdminModal] = useState(false);
   const [showAlertsMenu, setShowAlertsMenu] = useState(false);
+
+  const pendingUsersCount = allUsers.filter((u) => u.role === 'pending' || u.status === 'pending').length;
+  const officeAlertsCount = pendingUsersCount + (isBackupDue ? 1 : 0);
 
   // Compute urgent alerts
   const overdueReturns = events.filter((e) => {
@@ -65,7 +73,8 @@ export const Navbar: React.FC<NavbarProps> = ({
     (i) => i.status === 'active' && i.availableQuantity <= i.minStock
   );
 
-  const totalAlerts = overdueReturns.length + criticalIncidents.length + lowStockItems.length;
+  const backupAlertsCount = isAdmin && isBackupDue ? 1 : 0;
+  const totalAlerts = overdueReturns.length + criticalIncidents.length + lowStockItems.length + backupAlertsCount;
 
   const roleLabels: Record<UserRole, { label: string; desc: string; color: string }> = {
     admin: { label: 'Administrador (Jefe)', desc: 'Acceso total: contratos, reservas, precios y config.', color: 'bg-amber-500/20 text-amber-400 border-amber-500/40' },
@@ -134,30 +143,17 @@ export const Navbar: React.FC<NavbarProps> = ({
 
       {/* Quick Action Buttons & User Controls */}
       <div className="flex items-center gap-2 sm:gap-2.5">
-        {/* PWA Install Button (Chromium / iOS) */}
-        <PWAInstallButton />
-
-        {/* Mobile Camera QR & Barcode Scanner Button */}
-        {onOpenScanner && (
+        {/* Live Mobile Scanner Connected Badge (only shown when linked phone camera is open) */}
+        {isMobileScannerOnline && onOpenRemoteLinkModal && (
           <button
-            onClick={onOpenScanner}
-            className="flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 text-xs font-bold transition shadow-xs cursor-pointer"
-            title="Abrir Escáner de Cámara para Códigos QR y Códigos de Barras"
+            type="button"
+            onClick={onOpenRemoteLinkModal}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 text-xs font-bold transition cursor-pointer"
+            title="Tu móvil escáner está conectado en vivo con esta pantalla"
           >
-            <Camera className="w-3.5 h-3.5 text-amber-400" />
-            <span className="hidden sm:inline">Escanear QR</span>
-          </button>
-        )}
-
-        {/* Link Phone / PWA Info Modal */}
-        {onOpenMobileAppModal && (
-          <button
-            onClick={onOpenMobileAppModal}
-            className="hidden md:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-zinc-700 text-xs font-medium transition cursor-pointer"
-            title="Conectar con tu móvil y ver guía de instalación PWA"
-          >
-            <Smartphone className="w-3.5 h-3.5 text-cyan-400" />
-            <span>App Móvil</span>
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+            <Smartphone className="w-3.5 h-3.5" />
+            <span className="hidden md:inline">Móvil QR OK</span>
           </button>
         )}
 
@@ -224,6 +220,29 @@ export const Navbar: React.FC<NavbarProps> = ({
               </div>
 
               <div className="space-y-2.5 max-h-72 overflow-y-auto">
+                {isAdmin && isBackupDue && (
+                  <div>
+                    <span className="text-[11px] font-semibold text-cyan-400 uppercase tracking-wider block mb-1 flex items-center gap-1">
+                      <HardDrive className="w-3.5 h-3.5" />
+                      Copia de Seguridad Pendiente
+                    </span>
+                    <div
+                      onClick={() => {
+                        setShowAlertsMenu(false);
+                        onNavigate('oficina_backup');
+                      }}
+                      className="p-2.5 rounded bg-cyan-950/40 border border-cyan-500/40 hover:bg-cyan-900/40 cursor-pointer transition mb-1"
+                    >
+                      <div className="font-semibold text-cyan-200">
+                        Recordatorio cada {backupConfig.intervalMonths} meses — Ir a Oficina
+                      </div>
+                      <div className="text-[10px] text-cyan-300/90 mt-0.5">
+                        Guarda contratos, albaranes y el JSON completo de la app desde el panel de OFICINA.
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 {overdueReturns.length > 0 && (
                   <div>
                     <span className="text-[11px] font-semibold text-rose-400 uppercase tracking-wider block mb-1">
@@ -316,12 +335,17 @@ export const Navbar: React.FC<NavbarProps> = ({
               </div>
 
               <button
-                onClick={() => onNavigate('users')}
-                className="hidden lg:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[#0d1117] hover:bg-[#21262d] text-cyan-300 border border-cyan-800/40 text-xs font-semibold transition cursor-pointer"
-                title="Gestionar usuarios registrados con Google y asignar roles"
+                onClick={() => onNavigate('oficina')}
+                className="hidden lg:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[#0d1117] hover:bg-[#21262d] text-amber-300 border border-amber-500/40 text-xs font-bold transition cursor-pointer"
+                title="Abrir OFICINA: Contratos, Reservas, Roles de Personal y Copias de Seguridad"
               >
-                <Users className="w-3.5 h-3.5 text-cyan-400" />
-                <span>Gestión de Roles</span>
+                <Building2 className="w-3.5 h-3.5 text-amber-400" />
+                <span>Oficina</span>
+                {officeAlertsCount > 0 && (
+                  <span className="px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-300 border border-rose-500/40 text-[10px] font-mono animate-pulse">
+                    {officeAlertsCount}
+                  </span>
+                )}
               </button>
             </div>
           ) : (
@@ -384,12 +408,12 @@ export const Navbar: React.FC<NavbarProps> = ({
           ) : (
             <div className="flex items-center gap-1.5">
               <button
-                onClick={loginWithGoogle}
+                onClick={() => setShowAdminModal(true)}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-semibold border border-zinc-700 transition cursor-pointer"
-                title="Registrarse o iniciar sesión directamente con cuenta de Google Workspace"
+                title="Iniciar sesión con usuario y contraseña"
               >
                 <LogIn className="w-3.5 h-3.5 text-amber-400" />
-                <span className="hidden sm:inline">Google Login</span>
+                <span className="hidden sm:inline">Acceder</span>
               </button>
             </div>
           )}

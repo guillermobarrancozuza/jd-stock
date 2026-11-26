@@ -159,11 +159,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate, onOpen
           </button>
           {canViewContracts && (
             <button
-              onClick={() => onNavigate('contracts')}
+              onClick={() => onNavigate('oficina')}
               className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-linear-to-r from-amber-500/20 to-yellow-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 text-xs font-bold transition shadow-sm cursor-pointer"
             >
               <FileSignature className="w-3.5 h-3.5 text-amber-400" />
-              <span>Contratos & 10% Reserva</span>
+              <span>Oficina · Contratos y Roles</span>
             </button>
           )}
         </div>

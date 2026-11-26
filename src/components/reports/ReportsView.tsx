@@ -10,11 +10,18 @@ import {
   Clock,
   CheckCircle,
   FileSpreadsheet,
+  HardDrive,
 } from 'lucide-react';
 import { useInventory } from '../../context/InventoryContext.tsx';
+import { useAuth } from '../../context/AuthContext.tsx';
 
-export const ReportsView: React.FC = () => {
-  const { items, events, incidents, movements, categories } = useInventory();
+interface ReportsViewProps {
+  onOpenBackupModal?: () => void;
+}
+
+export const ReportsView: React.FC<ReportsViewProps> = ({ onOpenBackupModal }) => {
+  const { items, events, incidents, movements, categories, isBackupDue, exportFullBackupJson } = useInventory();
+  const { isAdmin } = useAuth();
 
   const [reportType, setReportType] = useState<
     'valuation' | 'category' | 'overdue' | 'repairs' | 'movements'
@@ -118,17 +125,31 @@ export const ReportsView: React.FC = () => {
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {isAdmin && (
+            <button
+              onClick={() => (onOpenBackupModal ? onOpenBackupModal() : exportFullBackupJson())}
+              className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${
+                isBackupDue
+                  ? 'bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/50 animate-pulse'
+                  : 'bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30'
+              }`}
+              title="Descargar copia de seguridad completa (.JSON) y configurar recordatorio periódico"
+            >
+              <HardDrive className="w-3.5 h-3.5" />
+              <span>{isBackupDue ? 'Backup Pendiente (.JSON)' : 'Copias de Seguridad (.JSON)'}</span>
+            </button>
+          )}
           <button
             onClick={() => window.print()}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-[#30363d] text-xs font-semibold transition"
+            className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-[#30363d] text-xs font-semibold transition cursor-pointer"
           >
             <Printer className="w-3.5 h-3.5" />
             <span>Imprimir Informe</span>
           </button>
           <button
             onClick={exportCurrentReportCSV}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-black text-xs font-bold transition shadow-lg shadow-amber-500/20"
+            className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-black text-xs font-bold transition shadow-lg shadow-amber-500/20 cursor-pointer"
           >
             <Download className="w-3.5 h-3.5" />
             <span>Exportar CSV</span>

@@ -43,6 +43,15 @@ export default defineConfig(() => {
               purpose: 'maskable',
             },
           ],
+          shortcuts: [
+            {
+              name: 'Escáner QR Vinculado',
+              short_name: 'Escáner QR',
+              description: 'Abre directamente la cámara vinculada a tu sesión del PC',
+              url: '/?scanner=remote',
+              icons: [{ src: '/pwa-192x192.png', sizes: '192x192', type: 'image/png' }],
+            },
+          ],
         },
         workbox: {
           globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],

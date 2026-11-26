@@ -2,15 +2,17 @@ export type UserRole = 'admin' | 'warehouse_manager' | 'technician' | 'pending';
 
 export interface UserProfile {
   id: string;
+  username?: string;
   email: string;
   name: string;
   role: UserRole;
   avatar?: string;
-  provider?: 'google' | 'admin_credentials';
+  provider?: 'password' | 'admin_credentials' | 'google';
   status?: 'active' | 'pending' | 'suspended';
   lastLogin?: string;
   assignedBy?: string;
   createdAt: string;
+  updatedAt?: string;
 }
 
 export type ItemStatus = 'active' | 'archived';
@@ -58,6 +60,7 @@ export interface Item {
   defaultLocationName: string;
   supplier?: string;
   purchasePrice?: number;
+  rentalPrice?: number;
   acquisitionDate?: string;
   status: ItemStatus;
   minStock: number;
@@ -161,12 +164,25 @@ export interface DispatchNote {
   contractId?: string;
   contractCode?: string;
   notes?: string;
+  contractSections?: {
+    section: string;
+    description: string;
+    quantity: number;
+  }[];
   items: {
     itemId: string;
     itemName: string;
     itemCode: string;
     quantity: number;
+    section?: string;
     unitSerialNumbers?: string[];
+    verifiedByQr?: boolean;
+    verifiedAt?: string;
+    verifiedBy?: string;
+    scannedQrCode?: string;
+    kitId?: string;
+    cableBoxId?: string;
+    kitComponentsSummary?: string;
   }[];
   clientSignatureUrl?: string;
   signerName?: string;
@@ -349,9 +365,23 @@ export interface InventorySession {
 
 export type ContractStatus = 'draft' | 'sent' | 'deposit_paid' | 'signed' | 'cancelled';
 
+export const CONTRACT_SECTIONS = [
+  'Sonido',
+  'Iluminación',
+  'Vídeo',
+  'Estructuras / Truss',
+  'Cableado',
+  'Personal / Trabajo',
+  'Transporte',
+  'Otros',
+] as const;
+
+export type ContractSection = (typeof CONTRACT_SECTIONS)[number];
+
 export interface ContractItem {
   id: string;
   itemId?: string;
+  section?: string;
   itemName: string;
   itemCode?: string;
   category?: string;
@@ -387,6 +417,7 @@ export interface CompanyFiscalConfig {
 export interface Contract {
   id: string;
   code: string; // e.g. "CTR-2026-001"
+  isGeneric?: boolean;
   eventId?: string;
   eventName: string;
   eventDate: string;
@@ -418,3 +449,74 @@ export interface Contract {
   createdAt: string;
   updatedAt: string;
 }
+
+export interface KitComponent {
+  id: string;
+  itemId?: string;
+  itemCode?: string;
+  name: string;
+  quantity: number;
+  notes?: string;
+}
+
+export interface EquipmentKit {
+  id: string;
+  code: string;
+  name: string;
+  section: string;
+  qrCode: string;
+  description?: string;
+  locationName: string;
+  rentalPrice?: number;
+  status: 'available' | 'in_event' | 'maintenance';
+  currentEventId?: string | null;
+  currentEventName?: string | null;
+  components: KitComponent[];
+  notes?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CableBoxAdjustment {
+  id: string;
+  date: string;
+  type: 'broken' | 'lost' | 'restocked';
+  amount: number;
+  previousQuantity: number;
+  newQuantity: number;
+  userName: string;
+  eventName?: string;
+  notes?: string;
+}
+
+export interface CableBox {
+  id: string;
+  code: string;
+  name: string;
+  cableType: string;
+  cableLength?: string;
+  qrCode: string;
+  linkedItemId?: string;
+  initialQuantity: number;
+  currentQuantity: number;
+  brokenCount: number;
+  lostCount: number;
+  locationName: string;
+  section: string;
+  status: 'available' | 'in_event' | 'incomplete';
+  notes?: string;
+  adjustments: CableBoxAdjustment[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BackupReminderConfig {
+  enabled: boolean;
+  intervalMonths: number;
+  adminEmail: string;
+  lastBackupDate: string | null;
+  lastReminderSentDate: string | null;
+  snoozedUntil?: string | null;
+}
+
+export type QrStickerSize = 'micro_20x20' | 'flycase_17x7' | 'truss_6x6';

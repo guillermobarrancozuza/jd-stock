@@ -23,6 +23,7 @@ import {
   RotateCcw,
   Trash2,
   Database,
+  MessageCircle,
 } from 'lucide-react';
 import { useAuth, DEFAULT_ADMIN_EMAIL, DEFAULT_ADMIN_LOGIN } from '../../context/AuthContext.tsx';
 import { useInventory } from '../../context/InventoryContext.tsx';
@@ -33,14 +34,22 @@ export const UsersManagementView: React.FC = () => {
     userProfile,
     isAdmin,
     allUsers,
+    createRegisteredUser,
     updateUserRole,
-    adminMasterPassword,
-    updateAdminPassword,
+    deleteUser,
+    updateOwnPassword,
   } = useAuth();
   const { seedInitialData, clearAllDemoData } = useInventory();
 
   const [showDemoModal, setShowDemoModal] = useState(false);
-  const [demoModalTab, setDemoModalTab] = useState<'wipe' | 'users'>('wipe');
+  const [showNewUserModal, setShowNewUserModal] = useState(false);
+  const [newUserEmail, setNewUserEmail] = useState('');
+  const [newUserName, setNewUserName] = useState('');
+  const [newUserPassword, setNewUserPassword] = useState('');
+  const [showNewUserPassword, setShowNewUserPassword] = useState(false);
+  const [newUserRole, setNewUserRole] = useState<UserRole>('technician');
+  const [isCreatingUser, setIsCreatingUser] = useState(false);
+  const [confirmDeleteUserId, setConfirmDeleteUserId] = useState<string | null>(null);
   const [isSeedingDemo, setIsSeedingDemo] = useState(false);
   const [isClearingDemo, setIsClearingDemo] = useState(false);
   const [confirmWipeOpen, setConfirmWipeOpen] = useState(false);
@@ -50,13 +59,17 @@ export const UsersManagementView: React.FC = () => {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isUpdatingUser, setIsUpdatingUser] = useState<string | null>(null);
 
-  // Master password change state
+  // Change own admin password state
   const [showPasswordSection, setShowPasswordSection] = useState(false);
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [showPasswordText, setShowPasswordText] = useState(false);
   const [isSavingPassword, setIsSavingPassword] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
+  const [recentlyApprovedUser, setRecentlyApprovedUser] = useState<{
+    user: UserProfile;
+    roleLabel: string;
+  } | null>(null);
+  const [copiedUserNoticeId, setCopiedUserNoticeId] = useState<string | null>(null);
 
   // If not admin, show access denied notice
   if (!isAdmin) {
@@ -96,17 +109,19 @@ export const UsersManagementView: React.FC = () => {
       icon: '🔧',
     },
     pending: {
-      label: 'Pendiente de Asignación',
+      label: 'Pendiente de Aprobación',
       badge: 'bg-amber-500/20 text-amber-300 border-amber-500/50 font-bold animate-pulse',
-      desc: 'Usuario recién registrado con Google. Esperando que el Administrador Jefe le asigne su rol.',
+      desc: 'Usuario recién registrado. Bloqueado sin acceso hasta que el Administrador Jefe le elija rol.',
       icon: '⏳',
     },
   };
 
   const filteredUsers = allUsers.filter((u) => {
+    const q = search.toLowerCase();
     const matchesSearch =
-      u.name.toLowerCase().includes(search.toLowerCase()) ||
-      u.email.toLowerCase().includes(search.toLowerCase());
+      u.name.toLowerCase().includes(q) ||
+      u.email.toLowerCase().includes(q) ||
+      (u.username || '').toLowerCase().includes(q);
     const matchesRole = roleFilter === 'all' || u.role === roleFilter;
     return matchesSearch && matchesRole;
   });
@@ -116,13 +131,37 @@ export const UsersManagementView: React.FC = () => {
   const totalTechnicians = allUsers.filter((u) => u.role === 'technician').length;
   const totalPending = allUsers.filter((u) => u.role === 'pending').length;
 
+  const buildApprovalNotice = (user: UserProfile, roleLabel: string) => {
+    const appUrl = typeof window !== 'undefined' ? window.location.origin : '';
+    const loginHandle = user.username ? user.username : user.email;
+    const message = `Hola ${user.name}, ya tienes acceso aprobado en JD Control de Stock con rol de ${roleLabel}. Puedes entrar con tu usuario (${loginHandle}) y tu contraseña en: ${appUrl}`;
+    const hasRealEmail =
+      Boolean(user.email) &&
+      !user.email.endsWith('@jdcontrol.app') &&
+      !user.email.endsWith('@jdcontrol.es');
+    return {
+      message,
+      whatsappUrl: `https://wa.me/?text=${encodeURIComponent(message)}`,
+      mailtoUrl: `mailto:${hasRealEmail ? encodeURIComponent(user.email) : ''}?subject=${encodeURIComponent(
+        'Acceso aprobado — JD Control de Stock'
+      )}&body=${encodeURIComponent(message)}`,
+    };
+  };
+
   const handleRoleChange = async (userId: string, newRole: UserRole) => {
     try {
       setIsUpdatingUser(userId);
       setErrorMessage(null);
+      const targetUser = allUsers.find((u) => u.id === userId);
       await updateUserRole(userId, newRole);
-      setSuccessMessage(`Rol actualizado con éxito a "${roleDefinitions[newRole].label}".`);
-      setTimeout(() => setSuccessMessage(null), 4000);
+      const label = roleDefinitions[newRole].label;
+      setSuccessMessage(`Rol actualizado con éxito a "${label}".`);
+      if (targetUser && newRole !== 'pending') {
+        setRecentlyApprovedUser({ user: { ...targetUser, role: newRole }, roleLabel: label });
+      } else {
+        setRecentlyApprovedUser(null);
+      }
+      setTimeout(() => setSuccessMessage(null), 5000);
     } catch (err: unknown) {
       setErrorMessage((err as Error).message || 'Error al actualizar rol');
     } finally {
@@ -146,8 +185,8 @@ export const UsersManagementView: React.FC = () => {
 
     try {
       setIsSavingPassword(true);
-      await updateAdminPassword(newPassword.trim());
-      setSuccessMessage('✓ Contraseña única de Administrador Jefe actualizada correctamente.');
+      await updateOwnPassword(newPassword.trim());
+      setSuccessMessage('✓ Contraseña de tu cuenta de Administrador Jefe actualizada correctamente.');
       setNewPassword('');
       setConfirmPassword('');
       setShowPasswordSection(false);
@@ -159,36 +198,51 @@ export const UsersManagementView: React.FC = () => {
     }
   };
 
-  const handleCopyGoogleInstructions = () => {
+  const handleCopyInviteInstructions = () => {
     const text =
-      `Para registrarte en JD Control de Stock, accede a la aplicación y pulsa en "Google Login" con tu cuenta de correo de Google. El Administrador Jefe activará tu rol técnico de inmediato.`;
+      `Para registrarte en JD Control de Stock, entra en la aplicación, pulsa en "Crear Cuenta" y genera tu usuario y contraseña. Cuando termines, avísame para activarte tu rol y darte acceso.`;
     navigator.clipboard.writeText(text);
     setCopiedLink(true);
     setTimeout(() => setCopiedLink(false), 2500);
   };
 
-  const handleCreateTestUser = () => {
-    const testId = `usr-test-${Date.now()}`;
-    const testUser: UserProfile = {
-      id: testId,
-      name: 'Técnico Demo (Google)',
-      email: `tecnico.demo.${Math.floor(Math.random() * 900 + 100)}@gmail.com`,
-      role: 'pending',
-      provider: 'google',
-      status: 'pending',
-      lastLogin: new Date().toISOString(),
-      assignedBy: 'Pendiente de asignación por Admin Jefe',
-      createdAt: new Date().toISOString(),
-    };
-    const saved = localStorage.getItem('jd_all_users');
-    const list: UserProfile[] = saved ? JSON.parse(saved) : allUsers;
-    const updated = [testUser, ...list.filter((u) => u.id !== testId)];
-    localStorage.setItem('jd_all_users', JSON.stringify(updated));
-    setSuccessMessage('✓ Creado usuario de prueba en estado "Pendiente". Puedes asignarle un rol para probar.');
-    setShowDemoModal(false);
-    setTimeout(() => setSuccessMessage(null), 4000);
-    // Reload state if possible
-    window.location.reload();
+  const handleCreateUserAccount = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMessage(null);
+    setIsCreatingUser(true);
+    try {
+      const created = await createRegisteredUser(
+        newUserEmail,
+        newUserName,
+        newUserPassword,
+        newUserRole
+      );
+      setSuccessMessage(
+        `✓ Usuario "${created.name}" (@${created.username || created.email}) creado con rol "${roleDefinitions[created.role].label}". Ya puede entrar con su usuario y contraseña.`
+      );
+      setNewUserEmail('');
+      setNewUserName('');
+      setNewUserPassword('');
+      setNewUserRole('technician');
+      setShowNewUserModal(false);
+      setTimeout(() => setSuccessMessage(null), 6000);
+    } catch (err: unknown) {
+      setErrorMessage((err as Error).message || 'Error al crear usuario');
+    } finally {
+      setIsCreatingUser(false);
+    }
+  };
+
+  const handleDeleteUser = async (userId: string) => {
+    try {
+      setErrorMessage(null);
+      await deleteUser(userId);
+      setConfirmDeleteUserId(null);
+      setSuccessMessage('✓ Usuario eliminado del sistema.');
+      setTimeout(() => setSuccessMessage(null), 4000);
+    } catch (err: unknown) {
+      setErrorMessage((err as Error).message || 'No se pudo eliminar el usuario');
+    }
   };
 
   return (
@@ -205,44 +259,51 @@ export const UsersManagementView: React.FC = () => {
             <div>
               <div className="flex items-center gap-2">
                 <h1 className="text-xl font-bold text-white tracking-wide">
-                  Gestión de Personal & Roles (Google)
+                  Gestión de Personal & Roles
                 </h1>
                 <span className="text-[10px] font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 px-2 py-0.5 rounded uppercase">
                   Exclusivo Administrador
                 </span>
               </div>
               <p className="text-xs text-zinc-400 mt-1 max-w-2xl">
-                Los técnicos y encargados se registran directamente iniciando sesión con Google. Solo tú como <strong>Administrador Jefe</strong> puedes asignar los roles del personal.
+                Los trabajadores crean su propio usuario y contraseña, pero permanecen bloqueados sin acceso hasta que tú como <strong>Administrador Jefe</strong> les eliges un rol.
               </p>
             </div>
           </div>
 
           <div className="flex items-center gap-2 flex-wrap">
             <button
+              onClick={() => setShowNewUserModal(true)}
+              className="px-3.5 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-black text-xs font-bold flex items-center gap-2 transition cursor-pointer shadow-lg shadow-emerald-500/20"
+            >
+              <UserPlus className="w-4 h-4" />
+              <span>Crear Usuario</span>
+            </button>
+
+            <button
               onClick={() => setShowPasswordSection(!showPasswordSection)}
               className="px-3 py-2 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/40 text-xs font-bold flex items-center gap-2 transition cursor-pointer shadow-xs"
             >
               <KeyRound className="w-4 h-4" />
-              <span>Contraseña Única</span>
+              <span>Cambiar Mi Contraseña</span>
             </button>
 
             <button
-              onClick={handleCopyGoogleInstructions}
+              onClick={handleCopyInviteInstructions}
               className="px-3 py-2 rounded-xl bg-[#0d1117] hover:bg-[#21262d] text-zinc-300 border border-[#30363d] text-xs font-semibold flex items-center gap-2 transition cursor-pointer"
-              title="Copiar instrucciones de registro de Google para nuevos técnicos"
+              title="Copiar instrucciones de registro para nuevos trabajadores"
             >
               {copiedLink ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4 text-cyan-400" />}
               <span>{copiedLink ? 'Copiado' : 'Invitar Personal'}</span>
             </button>
 
-            {/* Unique DEMO button in administration requested by user */}
             <button
               onClick={() => setShowDemoModal(true)}
               className="px-3 py-2 rounded-xl bg-purple-500/15 hover:bg-purple-500/25 text-purple-300 border border-purple-500/40 text-xs font-bold flex items-center gap-1.5 transition cursor-pointer shadow-xs"
-              title="Panel temporal DEMO para pruebas de administración"
+              title="Opciones de puesta a cero y datos de muestra"
             >
-              <Sparkles className="w-3.5 h-3.5 text-purple-400" />
-              <span>DEMO</span>
+              <Database className="w-3.5 h-3.5 text-purple-400" />
+              <span>Datos / Puesta a 0</span>
             </button>
           </div>
         </div>
@@ -255,6 +316,65 @@ export const UsersManagementView: React.FC = () => {
           </div>
         )}
 
+        {/* 1-Click Notify Worker Banner right after approval */}
+        {recentlyApprovedUser && (() => {
+          const notice = buildApprovalNotice(recentlyApprovedUser.user, recentlyApprovedUser.roleLabel);
+          return (
+            <div className="mt-3 p-3.5 rounded-xl bg-cyan-500/10 border border-cyan-500/40 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs animate-in fade-in">
+              <div>
+                <div className="font-bold text-cyan-200">
+                  ¿Quieres avisar a {recentlyApprovedUser.user.name} de que ya tiene acceso?
+                </div>
+                <p className="text-[11px] text-zinc-300 mt-0.5">
+                  Si tiene la app abierta se desbloquea sola al instante; si la cerró, avísale en 1 clic:
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                <a
+                  href={notice.whatsappUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs transition"
+                >
+                  <MessageCircle className="w-3.5 h-3.5" />
+                  <span>Avisar por WhatsApp</span>
+                </a>
+                <a
+                  href={notice.mailtoUrl}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs transition"
+                >
+                  <Mail className="w-3.5 h-3.5" />
+                  <span>Enviar Correo</span>
+                </a>
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard.writeText(notice.message);
+                    setCopiedUserNoticeId(recentlyApprovedUser.user.id);
+                    setTimeout(() => setCopiedUserNoticeId(null), 2500);
+                  }}
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-[#0d1117] hover:bg-zinc-800 text-zinc-200 border border-[#30363d] text-xs font-semibold cursor-pointer"
+                >
+                  {copiedUserNoticeId === recentlyApprovedUser.user.id ? (
+                    <Check className="w-3.5 h-3.5 text-emerald-400" />
+                  ) : (
+                    <Copy className="w-3.5 h-3.5 text-cyan-400" />
+                  )}
+                  <span>{copiedUserNoticeId === recentlyApprovedUser.user.id ? 'Copiado' : 'Copiar'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setRecentlyApprovedUser(null)}
+                  className="p-1.5 text-zinc-400 hover:text-white cursor-pointer"
+                  title="Cerrar aviso"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          );
+        })()}
+
         {errorMessage && (
           <div className="mt-4 p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 flex items-center gap-2 text-xs font-semibold animate-in fade-in">
             <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
@@ -263,7 +383,7 @@ export const UsersManagementView: React.FC = () => {
         )}
       </div>
 
-      {/* Admin Unique Password Configuration Card */}
+      {/* Change Own Admin Password Card */}
       {showPasswordSection && (
         <div className="bg-[#161b22] border-2 border-amber-500/40 rounded-2xl p-5 shadow-2xl space-y-4 animate-in fade-in zoom-in-95">
           <div className="flex items-center justify-between pb-3 border-b border-[#30363d]">
@@ -273,16 +393,16 @@ export const UsersManagementView: React.FC = () => {
               </div>
               <div>
                 <h3 className="text-xs font-bold text-white uppercase tracking-wider">
-                  Configuración de Login y Contraseña Única del Administrador Jefe
+                  Cambiar Contraseña del Administrador Jefe
                 </h3>
                 <p className="text-[11px] text-zinc-400">
-                  Esta contraseña te permite autenticarte de forma única en cualquier momento.
+                  Actualiza de forma cifrada la contraseña de tu cuenta activa.
                 </p>
               </div>
             </div>
             <button
               onClick={() => setShowPasswordSection(false)}
-              className="text-zinc-400 hover:text-white text-xs px-2 py-1 rounded hover:bg-[#30363d]"
+              className="text-zinc-400 hover:text-white text-xs px-2 py-1 rounded hover:bg-[#30363d] cursor-pointer"
             >
               ✕ Cerrar
             </button>
@@ -291,40 +411,30 @@ export const UsersManagementView: React.FC = () => {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
             <div className="p-4 rounded-xl bg-[#0d1117] border border-[#30363d] space-y-2">
               <span className="text-[11px] font-bold text-zinc-400 uppercase tracking-wider block">
-                Credenciales de Acceso Actuales
+                Cuenta Activa
               </span>
               <div className="space-y-1.5 pt-1">
                 <div className="flex items-center justify-between">
-                  <span className="text-zinc-400">Usuario de acceso:</span>
+                  <span className="text-zinc-400">Usuario:</span>
                   <span className="font-mono font-bold text-amber-300 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/30">
-                    {DEFAULT_ADMIN_LOGIN}
+                    @{userProfile?.username || DEFAULT_ADMIN_LOGIN}
                   </span>
                 </div>
                 <div className="flex items-center justify-between">
-                  <span className="text-zinc-400">Correo del Administrador:</span>
-                  <span className="font-mono text-zinc-200">{DEFAULT_ADMIN_EMAIL}</span>
+                  <span className="text-zinc-400">Correo interno:</span>
+                  <span className="font-mono text-zinc-200">{userProfile?.email || DEFAULT_ADMIN_EMAIL}</span>
                 </div>
                 <div className="flex items-center justify-between">
-                  <span className="text-zinc-400">Contraseña única actual:</span>
-                  <span className="font-mono text-cyan-300 font-bold bg-cyan-950/40 px-2 py-0.5 rounded border border-cyan-800/40">
-                    {showPasswordText ? adminMasterPassword : '••••••••••••'}
-                  </span>
+                  <span className="text-zinc-400">Seguridad:</span>
+                  <span className="text-emerald-400 font-semibold">Cifrada en Firebase Auth</span>
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={() => setShowPasswordText(!showPasswordText)}
-                className="mt-2 text-[10px] text-cyan-400 hover:text-cyan-300 flex items-center gap-1 font-semibold cursor-pointer"
-              >
-                {showPasswordText ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
-                <span>{showPasswordText ? 'Ocultar contraseña' : 'Ver contraseña actual'}</span>
-              </button>
             </div>
 
             <form onSubmit={handleSaveMasterPassword} className="space-y-3">
               <div>
                 <label className="block text-zinc-300 font-semibold mb-1 text-[11px]">
-                  Nueva Contraseña Maestra Única
+                  Nueva Contraseña (mín. 6 caracteres)
                 </label>
                 <input
                   type="password"
@@ -332,6 +442,7 @@ export const UsersManagementView: React.FC = () => {
                   onChange={(e) => setNewPassword(e.target.value)}
                   placeholder="Introduce nueva contraseña segura..."
                   required
+                  minLength={6}
                   className="w-full bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-amber-500"
                 />
               </div>
@@ -346,6 +457,7 @@ export const UsersManagementView: React.FC = () => {
                   onChange={(e) => setConfirmPassword(e.target.value)}
                   placeholder="Repite la nueva contraseña..."
                   required
+                  minLength={6}
                   className="w-full bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-amber-500"
                 />
               </div>
@@ -356,7 +468,7 @@ export const UsersManagementView: React.FC = () => {
                 className="w-full py-2 px-3 rounded-lg bg-amber-500 hover:bg-amber-400 text-black font-bold text-xs flex items-center justify-center gap-1.5 transition cursor-pointer shadow-sm disabled:opacity-50"
               >
                 <Save className="w-3.5 h-3.5" />
-                <span>{isSavingPassword ? 'Guardando...' : 'Guardar Nueva Contraseña Única'}</span>
+                <span>{isSavingPassword ? 'Guardando...' : 'Actualizar Mi Contraseña'}</span>
               </button>
             </form>
           </div>
@@ -368,7 +480,7 @@ export const UsersManagementView: React.FC = () => {
         <div className="p-4 rounded-xl bg-[#161b22] border border-[#30363d]">
           <span className="text-zinc-400 text-[11px] block font-medium">Personal Registrado</span>
           <span className="text-2xl font-bold text-white mt-1 block">{allUsers.length}</span>
-          <span className="text-[10px] text-zinc-500 block mt-0.5">Google Workspace & Maestros</span>
+          <span className="text-[10px] text-zinc-500 block mt-0.5">Cuentas con usuario y clave</span>
         </div>
 
         <div className={`p-4 rounded-xl border ${totalPending > 0 ? 'bg-amber-500/10 border-amber-500/50 shadow-md shadow-amber-500/10' : 'bg-[#161b22] border-[#30363d]'}`}>
@@ -378,7 +490,7 @@ export const UsersManagementView: React.FC = () => {
           <span className={`text-2xl font-black mt-1 block ${totalPending > 0 ? 'text-amber-300 animate-pulse' : 'text-zinc-400'}`}>
             {totalPending}
           </span>
-          <span className="text-[10px] text-amber-400/80 block mt-0.5">Registros Google por asignar</span>
+          <span className="text-[10px] text-amber-400/80 block mt-0.5">Bloqueados hasta elegir rol</span>
         </div>
 
         <div className="p-4 rounded-xl bg-amber-950/20 border border-amber-500/30">
@@ -414,7 +526,7 @@ export const UsersManagementView: React.FC = () => {
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Buscar por nombre o correo de Google..."
+            placeholder="Buscar por nombre, @usuario o correo..."
             className="w-full bg-[#0d1117] border border-[#30363d] rounded-lg pl-9 pr-3 py-1.5 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-amber-500"
           />
         </div>
@@ -504,10 +616,10 @@ export const UsersManagementView: React.FC = () => {
                       <div className="flex items-center gap-3 text-[11px] text-zinc-400 mt-1 flex-wrap">
                         <span className="flex items-center gap-1 font-mono text-zinc-300">
                           <Mail className="w-3 h-3 text-zinc-500" />
-                          {user.email}
+                          {user.username ? `@${user.username}` : user.email}
                         </span>
                         <span className="text-[10px] text-zinc-500">
-                          {user.provider === 'google' ? 'Acceso con Google' : 'Acceso Maestro'}
+                          Usuario y Contraseña
                         </span>
                         {user.lastLogin && (
                           <span className="text-[10px] text-zinc-500">
@@ -560,6 +672,60 @@ export const UsersManagementView: React.FC = () => {
                         {isUpdatingUser === user.id && (
                           <RefreshCw className="w-4 h-4 text-amber-400 animate-spin" />
                         )}
+
+                        {!isCurrentUser && user.role !== 'pending' && (() => {
+                          const rowNotice = buildApprovalNotice(user, roleMeta.label);
+                          return (
+                            <div className="flex items-center gap-1">
+                              <a
+                                href={rowNotice.whatsappUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="p-1.5 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-400 border border-emerald-500/30 transition"
+                                title={`Avisar a ${user.name} por WhatsApp`}
+                              >
+                                <MessageCircle className="w-3.5 h-3.5" />
+                              </a>
+                              <a
+                                href={rowNotice.mailtoUrl}
+                                className="p-1.5 rounded-lg bg-blue-500/15 hover:bg-blue-500/25 text-blue-400 border border-blue-500/30 transition"
+                                title={`Avisar a ${user.name} por correo electrónico`}
+                              >
+                                <Mail className="w-3.5 h-3.5" />
+                              </a>
+                            </div>
+                          );
+                        })()}
+
+                        {!isPrimaryAdmin && !isCurrentUser && (
+                          confirmDeleteUserId === user.id ? (
+                            <div className="flex items-center gap-1 ml-1">
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteUser(user.id)}
+                                className="px-2 py-1 rounded bg-rose-600 hover:bg-rose-500 text-white text-[10px] font-bold cursor-pointer"
+                              >
+                                Confirmar
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setConfirmDeleteUserId(null)}
+                                className="px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-[10px] cursor-pointer"
+                              >
+                                No
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeleteUserId(user.id)}
+                              className="p-1.5 rounded-lg bg-[#0d1117] hover:bg-rose-500/20 text-zinc-500 hover:text-rose-400 border border-[#30363d] hover:border-rose-500/40 transition cursor-pointer"
+                              title="Eliminar usuario"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )
+                        )}
                       </div>
                     </div>
                   </div>
@@ -592,8 +758,8 @@ export const UsersManagementView: React.FC = () => {
               <li>✓ Generar contratos y presupuestos</li>
               <li>✓ Pasarela de pago y abono 10% reserva</li>
               <li>✓ Ver precios de coste e informes económicos</li>
-              <li>✓ Asignar roles a los usuarios de Google</li>
-              <li>✓ Cambiar contraseña única del administrador</li>
+              <li>✓ Asignar roles y aprobar nuevos usuarios</li>
+              <li>✓ Crear cuentas de trabajadores con contraseña</li>
               <li>✓ Control completo de inventario y almacenes</li>
             </ul>
           </div>
@@ -638,25 +804,138 @@ export const UsersManagementView: React.FC = () => {
         </div>
       </div>
 
-      {/* DEMO Modal (Temporary in administration) */}
+      {/* Alta de Usuario (Usuario + Contraseña) Modal */}
+      {showNewUserModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-xs">
+          <div className="bg-[#161b22] border border-[#30363d] w-full max-w-md rounded-2xl shadow-2xl overflow-hidden animate-in fade-in zoom-in-95">
+            <div className="p-5 border-b border-[#30363d] flex items-center justify-between bg-[#1c2128]">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-lg bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-emerald-400">
+                  <UserPlus className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-white">Crear Cuenta de Trabajador</h3>
+                  <p className="text-[11px] text-zinc-400">Genera usuario, contraseña y rol de acceso</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowNewUserModal(false)}
+                className="text-zinc-400 hover:text-white p-1 rounded-lg hover:bg-[#30363d] cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateUserAccount} className="p-5 space-y-4 text-xs">
+              <div>
+                <label className="block text-zinc-300 font-semibold mb-1 text-[11px]">
+                  Nombre y Apellidos *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={newUserName}
+                  onChange={(e) => setNewUserName(e.target.value)}
+                  placeholder="Ej: Carlos López (Sonido)"
+                  className="w-full bg-[#0d1117] border border-[#30363d] rounded-xl px-3 py-2 text-white focus:outline-none focus:border-emerald-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-zinc-300 font-semibold mb-1 text-[11px]">
+                  Nombre de Usuario o Correo *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={newUserEmail}
+                  onChange={(e) => setNewUserEmail(e.target.value)}
+                  placeholder="Ej: carlos.sonido"
+                  autoCapitalize="none"
+                  className="w-full bg-[#0d1117] border border-[#30363d] rounded-xl px-3 py-2 text-white focus:outline-none focus:border-emerald-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-zinc-300 font-semibold mb-1 text-[11px]">
+                  Contraseña Inicial (mín. 6 caracteres) *
+                </label>
+                <div className="relative">
+                  <input
+                    type={showNewUserPassword ? 'text' : 'password'}
+                    required
+                    minLength={6}
+                    value={newUserPassword}
+                    onChange={(e) => setNewUserPassword(e.target.value)}
+                    placeholder="Elige una contraseña..."
+                    className="w-full bg-[#0d1117] border border-[#30363d] rounded-xl pl-3 pr-10 py-2 text-white font-mono focus:outline-none focus:border-emerald-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowNewUserPassword(!showNewUserPassword)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-200 cursor-pointer"
+                  >
+                    {showNewUserPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-zinc-300 font-semibold mb-1 text-[11px]">
+                  Rol y Permisos Asignados
+                </label>
+                <select
+                  value={newUserRole}
+                  onChange={(e) => setNewUserRole(e.target.value as UserRole)}
+                  className="w-full bg-[#0d1117] border border-[#30363d] rounded-xl px-3 py-2 text-white focus:outline-none focus:border-emerald-500"
+                >
+                  <option value="technician">🔧 Técnico (Salidas, QR, Albaranes y SAT)</option>
+                  <option value="warehouse_manager">📦 Encargado de Almacén (Stock, QR, Albaranes y SAT)</option>
+                  <option value="admin">👑 Administrador (Acceso total y Contratos)</option>
+                  <option value="pending">⏳ Pendiente (Bloqueado hasta activar)</option>
+                </select>
+              </div>
+
+              <div className="p-3 rounded-xl bg-cyan-500/10 border border-cyan-500/30 text-[11px] text-cyan-200">
+                Esta persona podrá entrar directamente con su <strong>usuario y contraseña</strong> en cualquier móvil u ordenador, con los permisos exactos de su rol.
+              </div>
+
+              <div className="flex items-center gap-2 pt-2">
+                <button
+                  type="submit"
+                  disabled={isCreatingUser}
+                  className="flex-1 py-2.5 px-4 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-black font-bold transition cursor-pointer disabled:opacity-50"
+                >
+                  {isCreatingUser ? 'Creando cuenta...' : 'Crear Usuario'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowNewUserModal(false)}
+                  className="py-2.5 px-4 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 transition cursor-pointer"
+                >
+                  Cancelar
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Datos / Puesta a 0 Modal */}
       {showDemoModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-xs">
           <div className="bg-[#161b22] border border-[#30363d] w-full max-w-lg rounded-2xl shadow-2xl overflow-hidden animate-in fade-in zoom-in-95">
-            {/* Header */}
             <div className="p-5 border-b border-[#30363d] flex items-center justify-between bg-linear-to-r from-[#161b22] to-[#1c2128]">
               <div className="flex items-center gap-2.5">
                 <div className="w-8 h-8 rounded-lg bg-purple-500/20 border border-purple-500/40 flex items-center justify-center text-purple-300">
-                  <Sparkles className="w-4 h-4" />
+                  <Database className="w-4 h-4" />
                 </div>
                 <div>
                   <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                    <span>Herramientas DEMO</span>
-                    <span className="text-[10px] font-mono bg-purple-500/20 text-purple-300 border border-purple-500/40 px-1.5 py-0.2 rounded font-semibold">
-                      ADMINISTRACIÓN
-                    </span>
+                    <span>Gestión de Datos / Puesta a 0</span>
                   </h3>
                   <p className="text-[11px] text-zinc-400">
-                    Opciones de control para pruebas y puesta a cero del almacén
+                    Vacía los datos de prueba para empezar con tu inventario real
                   </p>
                 </div>
               </div>
@@ -671,187 +950,108 @@ export const UsersManagementView: React.FC = () => {
               </button>
             </div>
 
-            {/* Modal Tabs */}
-            <div className="flex border-b border-[#30363d] bg-[#0d1117] px-5 pt-3 gap-2">
-              <button
-                type="button"
-                onClick={() => setDemoModalTab('wipe')}
-                className={`pb-2.5 px-3 text-xs font-bold border-b-2 flex items-center gap-1.5 transition cursor-pointer ${
-                  demoModalTab === 'wipe'
-                    ? 'border-rose-500 text-rose-400'
-                    : 'border-transparent text-zinc-400 hover:text-zinc-200'
-                }`}
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-                <span>Empezar desde 0 / Datos</span>
-              </button>
+            <div className="p-6 space-y-4 text-xs">
+              <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-200 text-xs space-y-2">
+                <div className="flex items-center gap-2 text-rose-400 font-bold">
+                  <Trash2 className="w-4 h-4 shrink-0" />
+                  <span>Vaciar Almacén para Empezar con tu Material Real</span>
+                </div>
+                <p className="text-[11px] leading-relaxed text-zinc-300">
+                  Esta opción elimina todos los artículos de muestra, unidades físicas, movimientos históricos, albaranes y contratos de prueba.
+                </p>
 
-              <button
-                type="button"
-                onClick={() => setDemoModalTab('users')}
-                className={`pb-2.5 px-3 text-xs font-bold border-b-2 flex items-center gap-1.5 transition cursor-pointer ${
-                  demoModalTab === 'users'
-                    ? 'border-purple-500 text-purple-400'
-                    : 'border-transparent text-zinc-400 hover:text-zinc-200'
-                }`}
-              >
-                <UserPlus className="w-3.5 h-3.5" />
-                <span>Simulación de Personal</span>
-              </button>
-            </div>
-
-            {/* Tab 1: Wipe / Start from 0 */}
-            {demoModalTab === 'wipe' && (
-              <div className="p-6 space-y-4 text-xs">
-                <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-200 text-xs space-y-2">
-                  <div className="flex items-center gap-2 text-rose-400 font-bold">
-                    <Trash2 className="w-4 h-4 shrink-0" />
-                    <span>Vaciar Almacén para Empezar con tu Material Real</span>
+                {!confirmWipeOpen ? (
+                  <button
+                    type="button"
+                    onClick={() => setConfirmWipeOpen(true)}
+                    className="mt-2 w-full py-2.5 px-4 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold flex items-center justify-center gap-2 transition cursor-pointer shadow-md shadow-rose-600/20 text-xs"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    <span>Eliminar todos los datos DEMO y dejar a 0</span>
+                  </button>
+                ) : (
+                  <div className="mt-3 p-3 rounded-lg bg-[#0d1117] border border-rose-500/60 space-y-2.5 animate-in fade-in">
+                    <div className="text-amber-300 font-bold text-xs flex items-center gap-1.5">
+                      <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                      <span>¿Estás seguro de que deseas vaciar todos los datos demo?</span>
+                    </div>
+                    <div className="flex items-center gap-2 pt-1">
+                      <button
+                        type="button"
+                        disabled={isClearingDemo}
+                        onClick={async () => {
+                          try {
+                            setIsClearingDemo(true);
+                            await clearAllDemoData();
+                            setSuccessMessage('✓ Se han eliminado todos los datos de demostración. El catálogo está a 0 listo para meter tu material.');
+                            setShowDemoModal(false);
+                            setConfirmWipeOpen(false);
+                            setTimeout(() => setSuccessMessage(null), 5000);
+                          } catch {
+                            setErrorMessage('Error al vaciar los datos.');
+                          } finally {
+                            setIsClearingDemo(false);
+                          }
+                        }}
+                        className="flex-1 py-2 px-3 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs transition cursor-pointer disabled:opacity-50"
+                      >
+                        {isClearingDemo ? 'Vaciando almacén...' : 'Sí, vaciar todo ahora'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setConfirmWipeOpen(false)}
+                        className="py-2 px-3 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs transition cursor-pointer"
+                      >
+                        Cancelar
+                      </button>
+                    </div>
                   </div>
-                  <p className="text-[11px] leading-relaxed text-zinc-300">
-                    Esta opción elimina por completo todos los artículos de muestra (Shure, Robe, Yamaha, etc.), unidades físicas con número de serie, movimientos históricos, albaranes y contratos de prueba.
-                  </p>
-                  <p className="text-[11px] text-zinc-400">
-                    Tu usuario de <strong>Administrador Jefe</strong>, los almacenes y las categorías técnicas se conservarán limpios para que puedas empezar a cargar tu flota real.
-                  </p>
-
-                  {!confirmWipeOpen ? (
-                    <button
-                      type="button"
-                      onClick={() => setConfirmWipeOpen(true)}
-                      className="mt-2 w-full py-2.5 px-4 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold flex items-center justify-center gap-2 transition cursor-pointer shadow-md shadow-rose-600/20 text-xs"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                      <span>Eliminar todos los datos DEMO y dejar a 0</span>
-                    </button>
-                  ) : (
-                    <div className="mt-3 p-3 rounded-lg bg-[#0d1117] border border-rose-500/60 space-y-2.5 animate-in fade-in">
-                      <div className="text-amber-300 font-bold text-xs flex items-center gap-1.5">
-                        <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
-                        <span>¿Estás seguro de que deseas vaciar todos los datos demo?</span>
-                      </div>
-                      <p className="text-[11px] text-zinc-400">
-                        El catálogo se quedará en 0 artículos y listo para que des de alta tus propios equipos.
-                      </p>
-                      <div className="flex items-center gap-2 pt-1">
-                        <button
-                          type="button"
-                          disabled={isClearingDemo}
-                          onClick={async () => {
-                            try {
-                              setIsClearingDemo(true);
-                              await clearAllDemoData();
-                              setSuccessMessage('✓ Se han eliminado todos los datos de demostración. El catálogo está a 0 listo para meter tu material.');
-                              setShowDemoModal(false);
-                              setConfirmWipeOpen(false);
-                              setTimeout(() => setSuccessMessage(null), 5000);
-                            } catch (e) {
-                              setErrorMessage('Error al vaciar los datos.');
-                            } finally {
-                              setIsClearingDemo(false);
-                            }
-                          }}
-                          className="flex-1 py-2 px-3 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs transition cursor-pointer disabled:opacity-50"
-                        >
-                          {isClearingDemo ? 'Vaciando almacén...' : 'Sí, vaciar todo ahora'}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setConfirmWipeOpen(false)}
-                          className="py-2 px-3 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs transition cursor-pointer"
-                        >
-                          Cancelar
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                {/* Reload demo option */}
-                <div className="pt-2 border-t border-[#30363d]/60">
-                  <span className="text-[11px] text-zinc-400 block mb-2">
-                    ¿Quieres volver a tener datos de prueba más adelante?
-                  </span>
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      try {
-                        setIsSeedingDemo(true);
-                        await seedInitialData();
-                        setSuccessMessage('✓ Datos de demostración restaurados correctamente.');
-                        setShowDemoModal(false);
-                        setTimeout(() => setSuccessMessage(null), 4000);
-                      } catch (e) {
-                        setErrorMessage('Error al restaurar datos de demo.');
-                      } finally {
-                        setIsSeedingDemo(false);
-                      }
-                    }}
-                    disabled={isSeedingDemo}
-                    className="w-full py-2 px-3 rounded-xl bg-[#0d1117] hover:bg-[#21262d] border border-[#30363d] hover:border-amber-500/40 text-zinc-300 font-semibold flex items-center justify-between transition cursor-pointer text-xs"
-                  >
-                    <div className="flex items-center gap-2 text-left">
-                      <RotateCcw className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                      <div>
-                        <span className="block text-zinc-200">Volver a Cargar Datos Demo (Shure, Robe, Yamaha...)</span>
-                        <span className="text-[10px] text-zinc-500 font-normal">Restablece 8 equipos con reservas y stock de muestra</span>
-                      </div>
-                    </div>
-                    <span className="text-zinc-500 text-xs">➔</span>
-                  </button>
-                </div>
-
-                <div className="pt-1">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowDemoModal(false);
-                      setConfirmWipeOpen(false);
-                    }}
-                    className="w-full py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-medium transition cursor-pointer text-xs"
-                  >
-                    Cerrar
-                  </button>
-                </div>
+                )}
               </div>
-            )}
 
-            {/* Tab 2: Personnel Simulation */}
-            {demoModalTab === 'users' && (
-              <div className="p-6 space-y-4 text-xs">
-                <div className="p-3 rounded-xl bg-purple-500/10 border border-purple-500/30 text-purple-200 text-[11px] leading-relaxed">
-                  Esta herramienta te permite simular un técnico que se registra por primera vez mediante Google, para que puedas verificar cómo el Administrador Jefe le asigna rol.
-                </div>
-
+              <div className="pt-2 border-t border-[#30363d]/60">
                 <button
                   type="button"
-                  onClick={handleCreateTestUser}
-                  className="w-full py-2.5 px-3.5 rounded-xl bg-[#0d1117] hover:bg-[#21262d] border border-[#30363d] hover:border-purple-500/50 text-white font-semibold flex items-center justify-between transition cursor-pointer text-xs"
+                  onClick={async () => {
+                    try {
+                      setIsSeedingDemo(true);
+                      await seedInitialData();
+                      setSuccessMessage('✓ Datos de demostración restaurados correctamente.');
+                      setShowDemoModal(false);
+                      setTimeout(() => setSuccessMessage(null), 4000);
+                    } catch {
+                      setErrorMessage('Error al restaurar datos de demo.');
+                    } finally {
+                      setIsSeedingDemo(false);
+                    }
+                  }}
+                  disabled={isSeedingDemo}
+                  className="w-full py-2 px-3 rounded-xl bg-[#0d1117] hover:bg-[#21262d] border border-[#30363d] hover:border-amber-500/40 text-zinc-300 font-semibold flex items-center justify-between transition cursor-pointer text-xs"
                 >
-                  <div className="flex items-center gap-2.5 text-left">
-                    <UserPlus className="w-4 h-4 text-cyan-400 shrink-0" />
+                  <div className="flex items-center gap-2 text-left">
+                    <RotateCcw className="w-3.5 h-3.5 text-amber-400 shrink-0" />
                     <div>
-                      <span className="block font-bold">Simular Usuario Google Pendiente</span>
-                      <span className="text-[10px] text-zinc-400 font-normal">Crea un técnico ficticio para probar la asignación de rol</span>
+                      <span className="block text-zinc-200">Volver a Cargar Datos Demo</span>
+                      <span className="text-[10px] text-zinc-500 font-normal">Restablece equipos, carros QR y cajas de cable de ejemplo</span>
                     </div>
                   </div>
                   <span className="text-zinc-500 text-xs">➔</span>
                 </button>
-
-                <div className="pt-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowDemoModal(false);
-                      setConfirmWipeOpen(false);
-                    }}
-                    className="w-full py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-medium transition cursor-pointer text-xs"
-                  >
-                    Cerrar
-                  </button>
-                </div>
               </div>
-            )}
+
+              <div className="pt-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowDemoModal(false);
+                    setConfirmWipeOpen(false);
+                  }}
+                  className="w-full py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-medium transition cursor-pointer text-xs"
+                >
+                  Cerrar
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

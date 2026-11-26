@@ -14,7 +14,7 @@ import {
   Package,
 } from 'lucide-react';
 import { useInventory } from '../../context/InventoryContext.tsx';
-import { Contract, ContractItem } from '../../types/inventory.ts';
+import { Contract, ContractItem, CONTRACT_SECTIONS } from '../../types/inventory.ts';
 import { DEFAULT_BANK_DETAILS, DEFAULT_CONTRACT_CLAUSES } from '../../lib/initialData.ts';
 
 interface GenerateContractModalProps {
@@ -28,12 +28,12 @@ export const GenerateContractModal: React.FC<GenerateContractModalProps> = ({
   onClose,
   onContractCreated,
 }) => {
-  const { events, eventItems, clients, items, generateContractFromEvent, saveContract } = useInventory();
+  const { events, eventItems, items, equipmentKits, defaultBankDetails, generateContractFromEvent, saveContract } = useInventory();
 
   const [selectedEventId, setSelectedEventId] = useState<string>('');
-  const [mode, setMode] = useState<'from_event' | 'custom'>('from_event');
+  const [mode, setMode] = useState<'from_event' | 'custom'>('custom');
 
-  // Custom contract fields
+  // Custom / Generic contract fields
   const [eventName, setEventName] = useState('');
   const [eventDate, setEventDate] = useState(new Date().toISOString().slice(0, 16));
   const [returnDate, setReturnDate] = useState(new Date().toISOString().slice(0, 16));
@@ -45,22 +45,24 @@ export const GenerateContractModal: React.FC<GenerateContractModalProps> = ({
   const [notes, setNotes] = useState('');
 
   // Editable Payment Gateway & Bank Account details
-  const [bankName, setBankName] = useState(DEFAULT_BANK_DETAILS.bankName);
-  const [accountHolder, setAccountHolder] = useState(DEFAULT_BANK_DETAILS.accountHolder);
-  const [iban, setIban] = useState(DEFAULT_BANK_DETAILS.iban);
-  const [bic, setBic] = useState(DEFAULT_BANK_DETAILS.bic);
-  const [bizumPhone, setBizumPhone] = useState(DEFAULT_BANK_DETAILS.bizumPhone);
-  const [hasBizum, setHasBizum] = useState<boolean>(false);
+  const [bankName, setBankName] = useState(defaultBankDetails?.bankName || DEFAULT_BANK_DETAILS.bankName);
+  const [accountHolder, setAccountHolder] = useState(defaultBankDetails?.accountHolder || DEFAULT_BANK_DETAILS.accountHolder);
+  const [iban, setIban] = useState(defaultBankDetails?.iban || DEFAULT_BANK_DETAILS.iban);
+  const [bic, setBic] = useState(defaultBankDetails?.bic || DEFAULT_BANK_DETAILS.bic);
+  const [bizumPhone, setBizumPhone] = useState(defaultBankDetails?.bizumPhone || DEFAULT_BANK_DETAILS.bizumPhone);
+  const [hasBizum, setHasBizum] = useState<boolean>(Boolean(defaultBankDetails?.hasBizum));
   const [depositRate, setDepositRate] = useState<number>(10);
   const [paymentConcept, setPaymentConcept] = useState('');
 
-  // Item lines for custom contract
+  // Item lines for generic/custom contract (with Apartado / section)
   const [customLines, setCustomLines] = useState<
-    { itemName: string; quantity: number; unitPrice: number; days: number }[]
+    { section: string; itemName: string; itemId?: string; itemCode?: string; quantity: number; unitPrice: number; days: number }[]
   >([
-    { itemName: 'Equipo de Sonido P.A. Principal', quantity: 1, unitPrice: 850, days: 1 },
-    { itemName: 'Sistema de Iluminación y Focos Móviles', quantity: 1, unitPrice: 500, days: 1 },
+    { section: 'Sonido', itemName: 'Sonido completo para evento (a verificar con QR en salida)', quantity: 1, unitPrice: 850, days: 1 },
+    { section: 'Iluminación', itemName: 'Iluminación escenario y ambiente', quantity: 1, unitPrice: 500, days: 1 },
   ]);
+  const [quickCatalogId, setQuickCatalogId] = useState('');
+  const [quickKitId, setQuickKitId] = useState('');
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -80,8 +82,54 @@ export const GenerateContractModal: React.FC<GenerateContractModalProps> = ({
   const handleAddLine = () => {
     setCustomLines([
       ...customLines,
-      { itemName: 'Servicio / Equipo Audiovisual', quantity: 1, unitPrice: 150, days: 1 },
+      { section: 'Sonido', itemName: '', quantity: 1, unitPrice: 0, days: 1 },
     ]);
+  };
+
+  const handleInsertCatalogItem = (itemId: string) => {
+    const it = items.find((i) => i.id === itemId);
+    if (!it) return;
+    const inferredSection = it.group.includes('SONIDO') || it.group.includes('MICRO') || it.group.includes('ETAPAS') || it.group.includes('MESAS')
+      ? 'Sonido'
+      : it.group.includes('ILUMIN')
+      ? 'Iluminación'
+      : it.group.includes('VÍDEO')
+      ? 'Vídeo'
+      : it.group.includes('TRUSS')
+      ? 'Estructuras / Truss'
+      : it.group.includes('CABLE')
+      ? 'Cableado'
+      : 'Otros';
+    setCustomLines((prev) => [
+      ...prev,
+      {
+        section: inferredSection,
+        itemId: it.id,
+        itemCode: it.code,
+        itemName: it.name,
+        quantity: 1,
+        unitPrice: it.rentalPrice ?? 0,
+        days: 1,
+      },
+    ]);
+    setQuickCatalogId('');
+  };
+
+  const handleInsertKit = (kitId: string) => {
+    const kit = equipmentKits.find((k) => k.id === kitId);
+    if (!kit) return;
+    setCustomLines((prev) => [
+      ...prev,
+      {
+        section: kit.section || 'Sonido',
+        itemCode: kit.code,
+        itemName: `${kit.name} (${kit.components.map((c) => `${c.quantity}× ${c.name}`).join(', ')})`,
+        quantity: 1,
+        unitPrice: kit.rentalPrice ?? 0,
+        days: 1,
+      },
+    ]);
+    setQuickKitId('');
   };
 
   const handleRemoveLine = (index: number) => {
@@ -91,7 +139,7 @@ export const GenerateContractModal: React.FC<GenerateContractModalProps> = ({
 
   const handleLineChange = (
     index: number,
-    field: 'itemName' | 'quantity' | 'unitPrice' | 'days',
+    field: 'section' | 'itemName' | 'quantity' | 'unitPrice' | 'days',
     value: string | number
   ) => {
     const updated = [...customLines];
@@ -137,16 +185,22 @@ export const GenerateContractModal: React.FC<GenerateContractModalProps> = ({
           return;
         }
 
-        const contractItems: ContractItem[] = customLines.map((l, idx) => ({
-          id: `ci-${Date.now()}-${idx}`,
-          itemName: l.itemName,
-          quantity: Number(l.quantity) || 1,
-          unitPrice: Number(l.unitPrice) || 0,
-          days: Number(l.days) || 1,
-          totalPrice: (Number(l.quantity) || 1) * (Number(l.unitPrice) || 0) * (Number(l.days) || 1),
-        }));
+        const contractItems: ContractItem[] = customLines
+          .filter((l) => l.itemName.trim())
+          .map((l, idx) => ({
+            id: `ci-${Date.now()}-${idx}`,
+            section: l.section || 'Sonido',
+            itemId: l.itemId,
+            itemCode: l.itemCode,
+            itemName: l.itemName.trim(),
+            quantity: Number(l.quantity) || 1,
+            unitPrice: Number(l.unitPrice) || 0,
+            days: Number(l.days) || 1,
+            totalPrice: (Number(l.quantity) || 1) * (Number(l.unitPrice) || 0) * (Number(l.days) || 1),
+          }));
 
         const newContract = await saveContract({
+          isGeneric: true,
           eventName,
           eventDate,
           returnDate: returnDate || eventDate,
@@ -213,12 +267,24 @@ export const GenerateContractModal: React.FC<GenerateContractModalProps> = ({
           </button>
         </div>
 
-        {/* Tab Selection: From Event vs Custom */}
+        {/* Tab Selection: Generic / Custom vs From Event */}
         <div className="px-6 pt-4 flex gap-2 border-b border-[#30363d] bg-[#0d1117]/50">
           <button
             type="button"
+            onClick={() => setMode('custom')}
+            className={`pb-2.5 px-3 text-xs font-semibold border-b-2 transition flex items-center gap-1.5 cursor-pointer ${
+              mode === 'custom'
+                ? 'border-amber-500 text-amber-400'
+                : 'border-transparent text-zinc-400 hover:text-zinc-200'
+            }`}
+          >
+            <Building className="w-3.5 h-3.5" />
+            <span>Contrato Genérico / Libre (por Apartados)</span>
+          </button>
+          <button
+            type="button"
             onClick={() => setMode('from_event')}
-            className={`pb-2.5 px-3 text-xs font-semibold border-b-2 transition flex items-center gap-1.5 ${
+            className={`pb-2.5 px-3 text-xs font-semibold border-b-2 transition flex items-center gap-1.5 cursor-pointer ${
               mode === 'from_event'
                 ? 'border-amber-500 text-amber-400'
                 : 'border-transparent text-zinc-400 hover:text-zinc-200'
@@ -226,18 +292,6 @@ export const GenerateContractModal: React.FC<GenerateContractModalProps> = ({
           >
             <Sparkles className="w-3.5 h-3.5" />
             <span>Generar Automático desde Evento Existente</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setMode('custom')}
-            className={`pb-2.5 px-3 text-xs font-semibold border-b-2 transition flex items-center gap-1.5 ${
-              mode === 'custom'
-                ? 'border-amber-500 text-amber-400'
-                : 'border-transparent text-zinc-400 hover:text-zinc-200'
-            }`}
-          >
-            <Building className="w-3.5 h-3.5" />
-            <span>Contrato a Medida / Personalizado</span>
           </button>
         </div>
 
@@ -441,29 +495,76 @@ export const GenerateContractModal: React.FC<GenerateContractModalProps> = ({
                 </div>
               </div>
 
-              {/* Items Breakdown */}
-              <div className="pt-2 border-t border-[#30363d] space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="font-semibold text-zinc-300">Partidas y Equipamiento:</span>
+              {/* Items Breakdown (Generic by Apartado + optional catalog/kit insert) */}
+              <div className="pt-2 border-t border-[#30363d] space-y-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <span className="font-semibold text-zinc-200 block">
+                      Partidas del Contrato Genérico (pon lo que quieras por Apartado):
+                    </span>
+                    <span className="text-[10px] text-cyan-400">
+                      Luego en el Albarán podrás escanear con QR qué material exacto sale dentro de cada apartado (ej. Sonido).
+                    </span>
+                  </div>
                   <button
                     type="button"
                     onClick={handleAddLine}
-                    className="flex items-center gap-1 text-[11px] text-amber-400 hover:text-amber-300 font-semibold"
+                    className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 text-[11px] font-bold cursor-pointer"
                   >
                     <Plus className="w-3.5 h-3.5" />
-                    <span>Añadir Partida</span>
+                    <span>+ Línea Libre</span>
                   </button>
+                </div>
+
+                {/* Quick insert from Catalog or Composite Kits */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <select
+                    value={quickCatalogId}
+                    onChange={(e) => handleInsertCatalogItem(e.target.value)}
+                    className="bg-[#0d1117] border border-[#30363d] rounded-lg px-2.5 py-1.5 text-[11px] text-zinc-300 focus:outline-none focus:border-amber-500"
+                  >
+                    <option value="">+ Insertar equipo del catálogo (con tarifa)...</option>
+                    {items.map((it) => (
+                      <option key={it.id} value={it.id}>
+                        [{it.code}] {it.name} — {(it.rentalPrice ?? 0).toFixed(0)}€
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    value={quickKitId}
+                    onChange={(e) => handleInsertKit(e.target.value)}
+                    className="bg-[#0d1117] border border-cyan-500/30 rounded-lg px-2.5 py-1.5 text-[11px] text-cyan-200 focus:outline-none focus:border-cyan-400"
+                  >
+                    <option value="">+ Insertar QR Conjunto / Carro...</option>
+                    {equipmentKits.map((k) => (
+                      <option key={k.id} value={k.id}>
+                        [{k.section}] {k.name} — {(k.rentalPrice ?? 0).toFixed(0)}€
+                      </option>
+                    ))}
+                  </select>
                 </div>
 
                 <div className="space-y-2">
                   {customLines.map((line, idx) => (
-                    <div key={idx} className="flex items-center gap-2 bg-[#0d1117] p-2 rounded-lg border border-[#30363d]">
+                    <div key={idx} className="flex flex-wrap sm:flex-nowrap items-center gap-2 bg-[#0d1117] p-2 rounded-lg border border-[#30363d]">
+                      <select
+                        value={line.section}
+                        onChange={(e) => handleLineChange(idx, 'section', e.target.value)}
+                        className="bg-[#161b22] border border-cyan-500/40 rounded px-2 py-1 text-[11px] font-bold text-cyan-300 shrink-0 focus:outline-none"
+                        title="Apartado (se trasladará al albarán para verificar con QR)"
+                      >
+                        {CONTRACT_SECTIONS.map((sec) => (
+                          <option key={sec} value={sec}>
+                            {sec}
+                          </option>
+                        ))}
+                      </select>
                       <input
                         type="text"
                         value={line.itemName}
                         onChange={(e) => handleLineChange(idx, 'itemName', e.target.value)}
-                        placeholder="Descripción equipo o servicio"
-                        className="flex-1 bg-transparent text-xs text-white focus:outline-none px-1"
+                        placeholder="Escribe el concepto libre (ej. Sonido ceremonia y barra libre...)"
+                        className="flex-1 min-w-[160px] bg-transparent text-xs text-white focus:outline-none px-1"
                       />
                       <div className="flex items-center gap-1">
                         <span className="text-[10px] text-zinc-500">Cant:</span>
@@ -480,6 +581,7 @@ export const GenerateContractModal: React.FC<GenerateContractModalProps> = ({
                         <input
                           type="number"
                           min="0"
+                          step="0.5"
                           value={line.unitPrice}
                           onChange={(e) => handleLineChange(idx, 'unitPrice', parseFloat(e.target.value) || 0)}
                           className="w-16 bg-[#161b22] border border-[#30363d] rounded px-1.5 py-1 text-right text-xs text-white"
@@ -498,7 +600,7 @@ export const GenerateContractModal: React.FC<GenerateContractModalProps> = ({
                       <button
                         type="button"
                         onClick={() => handleRemoveLine(idx)}
-                        className="text-zinc-500 hover:text-rose-400 p-1"
+                        className="text-zinc-500 hover:text-rose-400 p-1 cursor-pointer"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>

@@ -25,6 +25,7 @@
         "defaultLocationName": { "type": "string" },
         "supplier": { "type": "string" },
         "purchasePrice": { "type": "number" },
+        "rentalPrice": { "type": "number" },
         "acquisitionDate": { "type": "string" },
         "status": { "type": "string" },
         "minStock": { "type": "number" },
@@ -243,17 +244,77 @@
     },
     "UserProfile": {
       "title": "UserProfile",
-      "description": "Perfil y rol de usuario del sistema",
+      "description": "Perfil y rol de usuario del sistema con autenticación por usuario y contraseña",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "username": { "type": "string", "maxLength": 64 },
+        "email": { "type": "string", "maxLength": 200 },
+        "name": { "type": "string", "maxLength": 120 },
+        "role": { "type": "string", "enum": ["admin", "warehouse_manager", "technician", "pending"] },
+        "status": { "type": "string", "enum": ["active", "pending", "suspended"] },
+        "provider": { "type": "string", "maxLength": 32 },
+        "avatar": { "type": "string", "maxLength": 500 },
+        "assignedBy": { "type": "string", "maxLength": 120 },
+        "lastLogin": { "type": "string", "maxLength": 64 },
+        "createdAt": { "type": "string", "maxLength": 64 },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "email", "name", "role", "status", "createdAt"]
+    },
+    "EquipmentKit": {
+      "title": "EquipmentKit",
+      "description": "QR conjunto / carro / rack con múltiples equipos agrupados",
       "type": "object",
       "properties": {
         "id": { "type": "string" },
-        "email": { "type": "string" },
+        "code": { "type": "string" },
         "name": { "type": "string" },
-        "role": { "type": "string" },
-        "avatar": { "type": "string" },
-        "createdAt": { "type": "string" }
+        "section": { "type": "string" },
+        "qrCode": { "type": "string" },
+        "locationName": { "type": "string" },
+        "rentalPrice": { "type": "number" },
+        "status": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
       },
-      "required": ["id", "email", "name", "role"]
+      "required": ["id", "code", "name", "qrCode", "status"]
+    },
+    "CableBox": {
+      "title": "CableBox",
+      "description": "Caja de cables con QR conjunto y descuento por rotura o pérdida",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "code": { "type": "string" },
+        "name": { "type": "string" },
+        "cableType": { "type": "string" },
+        "qrCode": { "type": "string" },
+        "initialQuantity": { "type": "number" },
+        "currentQuantity": { "type": "number" },
+        "brokenCount": { "type": "number" },
+        "lostCount": { "type": "number" },
+        "status": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "code", "name", "qrCode", "initialQuantity", "currentQuantity"]
+    },
+    "ScannerBridge": {
+      "title": "ScannerBridge",
+      "description": "Canal privado en tiempo real por usuario para vincular el escáner QR del móvil con la sesión abierta en el PC",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "maxLength": 128 },
+        "lastCode": { "type": "string", "maxLength": 500 },
+        "scanId": { "type": "string", "maxLength": 128 },
+        "scannedAt": { "type": "number" },
+        "senderDeviceId": { "type": "string", "maxLength": 128 },
+        "senderName": { "type": "string", "maxLength": 120 },
+        "mobileActiveAt": { "type": "number" },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["userId", "senderDeviceId", "updatedAt"]
     }
   },
   "firestore": {
@@ -308,6 +369,18 @@
     "/users/{userId}": {
       "schema": { "$ref": "#/entities/UserProfile" },
       "description": "Usuarios del sistema con roles y permisos"
+    },
+    "/equipmentKits/{kitId}": {
+      "schema": { "$ref": "#/entities/EquipmentKit" },
+      "description": "QR conjuntos de carros, racks y packs de equipos"
+    },
+    "/cableBoxes/{boxId}": {
+      "schema": { "$ref": "#/entities/CableBox" },
+      "description": "Cajas de cables con QR conjunto y control de roturas/pérdidas"
+    },
+    "/scanner_bridge/{userId}": {
+      "schema": { "$ref": "#/entities/ScannerBridge" },
+      "description": "Puente en tiempo real privado por usuario entre la cámara remota del móvil y el PC"
     }
   }
 }
