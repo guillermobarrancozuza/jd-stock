@@ -207,6 +207,11 @@ service cloud.firestore {
       allow read, write: if isApprovedUser();
     }
 
+    // Returns and Incoming Event Material Checks
+    match /returns/{returnId} {
+      allow read, write: if isApprovedUser();
+    }
+
     // Composite Equipment Kits (Carros / Racks con QR conjunto)
     match /equipmentKits/{kitId} {
       allow read, write: if isApprovedUser();

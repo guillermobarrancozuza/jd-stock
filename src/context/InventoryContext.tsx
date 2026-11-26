@@ -290,6 +290,39 @@ const setStored = <T,>(key: string, val: T) => {
   }
 };
 
+// Recursively remove undefined keys so Firestore setDoc never rejects optional fields
+const stripUndefined = <T,>(value: T): T => {
+  if (Array.isArray(value)) {
+    return value.map((item) => stripUndefined(item)) as unknown as T;
+  }
+  if (value !== null && typeof value === 'object') {
+    const clean: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (v !== undefined) {
+        clean[k] = stripUndefined(v);
+      }
+    }
+    return clean as T;
+  }
+  return value;
+};
+
+const persistDoc = async (colName: string, id: string, data: unknown) => {
+  try {
+    await setDoc(doc(db, colName, id), stripUndefined(data) as Record<string, unknown>);
+  } catch (err) {
+    console.warn(`Firestore write failed for ${colName}/${id}:`, err);
+  }
+};
+
+const removeDoc = async (colName: string, id: string) => {
+  try {
+    await deleteDoc(doc(db, colName, id));
+  } catch (err) {
+    console.warn(`Firestore delete failed for ${colName}/${id}:`, err);
+  }
+};
+
 export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { userProfile, isAuthenticated, isPending } = useAuth();
   const [loading, setLoading] = useState(true);
@@ -365,94 +398,147 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   useEffect(() => { setStored('company_fiscal_config', companyFiscalConfig); }, [companyFiscalConfig]);
   useEffect(() => { setStored('default_bank_details', defaultBankDetails); }, [defaultBankDetails]);
 
-  // Firestore sync effect — only subscribe once user is authenticated AND approved by Chief Admin
+  // Firestore real-time sync effect — subscribes to ALL shared collections once user is approved (Admin, Encargado, Técnico)
   useEffect(() => {
     if (!isAuthenticated || isPending || !userProfile || userProfile.role === 'pending') {
       setLoading(false);
       return;
     }
 
-    let unsubItems: (() => void) | undefined;
-    let unsubEvents: (() => void) | undefined;
-    let unsubKits: (() => void) | undefined;
-    let unsubBoxes: (() => void) | undefined;
+    let cancelled = false;
+    const unsubs: (() => void)[] = [];
+    const isAdminUser = userProfile.role === 'admin';
+
+    const sortByDateDesc = <T extends { createdAt?: string }>(a: T, b: T) =>
+      (b.createdAt || '').localeCompare(a.createdAt || '');
+
+    const subscribeCollection = <T,>(
+      colName: string,
+      setter: React.Dispatch<React.SetStateAction<T[]>>,
+      sortFn?: (a: T, b: T) => number
+    ) => {
+      let hasReceivedServerData = false;
+      const unsub = onSnapshot(
+        collection(db, colName),
+        (snapshot) => {
+          if (cancelled) return;
+          if (snapshot.empty && snapshot.metadata.fromCache && !hasReceivedServerData) {
+            return;
+          }
+          if (!snapshot.metadata.fromCache) {
+            hasReceivedServerData = true;
+          }
+          const list: T[] = [];
+          snapshot.forEach((docSnap) => list.push(docSnap.data() as T));
+          if (sortFn) list.sort(sortFn);
+          setter(list);
+          setIsOfflineMode(false);
+        },
+        (err) => {
+          console.warn(`Firestore snapshot warning (${colName}):`, err.message);
+          if (colName === 'items') setIsOfflineMode(true);
+        }
+      );
+      unsubs.push(unsub);
+    };
+
+    const seedCollectionIfEmpty = async <T extends { id: string }>(colName: string, docsToSeed: T[]) => {
+      if (docsToSeed.length === 0) return;
+      try {
+        const snap = await getDocs(collection(db, colName));
+        if (snap.empty) {
+          await Promise.all(docsToSeed.map((d) => persistDoc(colName, d.id, d)));
+        }
+      } catch (err) {
+        console.warn(`Could not check/seed ${colName}:`, err);
+      }
+    };
 
     const initFirestoreSync = async () => {
       try {
-        const itemsColl = collection(db, 'items');
-        const snap = await getDocs(itemsColl);
-        if (snap.empty) {
-          for (const item of INITIAL_ITEMS) {
-            await setDoc(doc(db, 'items', item.id), item);
-          }
-          for (const ev of INITIAL_EVENTS) {
-            await setDoc(doc(db, 'events', ev.id), ev);
-          }
-          for (const cat of INITIAL_CATEGORIES) {
-            await setDoc(doc(db, 'categories', cat.id), cat);
-          }
-          for (const loc of INITIAL_LOCATIONS) {
-            await setDoc(doc(db, 'locations', loc.id), loc);
-          }
+        const itemsSnap = await getDocs(collection(db, 'items'));
+        if (cancelled) return;
+
+        if (itemsSnap.empty) {
+          // Brand-new Firestore database: seed initial dataset once
+          await Promise.all([
+            ...INITIAL_ITEMS.map((item) => persistDoc('items', item.id, item)),
+            ...INITIAL_UNITS.map((unit) => persistDoc('itemUnits', unit.id, unit)),
+            ...INITIAL_CATEGORIES.map((cat) => persistDoc('categories', cat.id, cat)),
+            ...INITIAL_LOCATIONS.map((loc) => persistDoc('locations', loc.id, loc)),
+            ...INITIAL_CLIENTS.map((cli) => persistDoc('clients', cli.id, cli)),
+            ...INITIAL_SUPPLIERS.map((sup) => persistDoc('suppliers', sup.id, sup)),
+            ...INITIAL_EVENTS.map((ev) => persistDoc('events', ev.id, ev)),
+            ...INITIAL_EVENT_ITEMS.map((ei) => persistDoc('eventItems', ei.id, ei)),
+            ...INITIAL_DISPATCHES.map((dsp) => persistDoc('dispatches', dsp.id, dsp)),
+            ...INITIAL_INCIDENTS.map((inc) => persistDoc('incidents', inc.id, inc)),
+            ...INITIAL_MOVEMENTS.map((mov) => persistDoc('movements', mov.id, mov)),
+            ...INITIAL_EQUIPMENT_KITS.map((kit) => persistDoc('equipmentKits', kit.id, kit)),
+            ...INITIAL_CABLE_BOXES.map((box) => persistDoc('cableBoxes', box.id, box)),
+            ...(isAdminUser ? INITIAL_CONTRACTS.map((ctr) => persistDoc('contracts', ctr.id, ctr)) : []),
+          ]);
+        } else {
+          // Existing active database: migrate any previously local-only collections if empty in Firestore
+          await Promise.all([
+            seedCollectionIfEmpty('clients', getStored<Client[]>('clients', INITIAL_CLIENTS)),
+            seedCollectionIfEmpty('suppliers', getStored<Supplier[]>('suppliers', INITIAL_SUPPLIERS)),
+            seedCollectionIfEmpty('categories', getStored<Category[]>('categories', INITIAL_CATEGORIES)),
+            seedCollectionIfEmpty('locations', getStored<Location[]>('locations', INITIAL_LOCATIONS)),
+            seedCollectionIfEmpty('itemUnits', getStored<ItemUnit[]>('units', INITIAL_UNITS)),
+            seedCollectionIfEmpty('eventItems', getStored<EventItem[]>('event_items', INITIAL_EVENT_ITEMS)),
+            seedCollectionIfEmpty('dispatches', getStored<DispatchNote[]>('dispatches', INITIAL_DISPATCHES)),
+            seedCollectionIfEmpty('returns', getStored<ReturnNote[]>('returns', [])),
+            seedCollectionIfEmpty('incidents', getStored<Incident[]>('incidents', INITIAL_INCIDENTS)),
+            seedCollectionIfEmpty('purchases', getStored<Purchase[]>('purchases', [])),
+            seedCollectionIfEmpty('inventorySessions', getStored<InventorySession[]>('inventory_sessions', [])),
+            seedCollectionIfEmpty('equipmentKits', getStored<EquipmentKit[]>('equipment_kits', INITIAL_EQUIPMENT_KITS)),
+            seedCollectionIfEmpty('cableBoxes', getStored<CableBox[]>('cable_boxes', INITIAL_CABLE_BOXES)),
+            ...(isAdminUser ? [seedCollectionIfEmpty('contracts', getStored<Contract[]>('contracts', INITIAL_CONTRACTS))] : []),
+          ]);
         }
 
-        unsubItems = onSnapshot(collection(db, 'items'), (snapshot) => {
-          if (!snapshot.empty) {
-            const list: Item[] = [];
-            snapshot.forEach((docSnap) => list.push(docSnap.data() as Item));
-            setItems(list);
-          }
-        }, (err) => {
-          console.warn('Items snapshot warning:', err.message);
-          setIsOfflineMode(true);
-        });
+        if (cancelled) return;
 
-        unsubEvents = onSnapshot(collection(db, 'events'), (snapshot) => {
-          if (!snapshot.empty) {
-            const list: AVEvent[] = [];
-            snapshot.forEach((docSnap) => list.push(docSnap.data() as AVEvent));
-            setEvents(list);
-          }
-        }, (err) => {
-          console.warn('Events snapshot warning:', err.message);
-        });
+        // Attach real-time listeners to ALL shared collections so every role sees changes instantaneously
+        subscribeCollection<Item>('items', setItems, sortByDateDesc);
+        subscribeCollection<ItemUnit>('itemUnits', setItemUnits, sortByDateDesc);
+        subscribeCollection<Category>('categories', setCategories);
+        subscribeCollection<Location>('locations', setLocations);
+        subscribeCollection<AVEvent>('events', setEvents, sortByDateDesc);
+        subscribeCollection<EventItem>('eventItems', setEventItems);
+        subscribeCollection<InventoryMovement>('movements', setMovements, (a, b) =>
+          (b.timestamp || '').localeCompare(a.timestamp || '')
+        );
+        subscribeCollection<Incident>('incidents', setIncidents, sortByDateDesc);
+        subscribeCollection<Client>('clients', setClients, sortByDateDesc);
+        subscribeCollection<Supplier>('suppliers', setSuppliers, sortByDateDesc);
+        subscribeCollection<DispatchNote>('dispatches', setDispatches, sortByDateDesc);
+        subscribeCollection<ReturnNote>('returns', setReturns, sortByDateDesc);
+        subscribeCollection<Purchase>('purchases', setPurchases, sortByDateDesc);
+        subscribeCollection<InventorySession>('inventorySessions', setInventorySessions, (a, b) =>
+          (b.startDate || '').localeCompare(a.startDate || '')
+        );
+        subscribeCollection<EquipmentKit>('equipmentKits', setEquipmentKits, sortByDateDesc);
+        subscribeCollection<CableBox>('cableBoxes', setCableBoxes, sortByDateDesc);
 
-        unsubKits = onSnapshot(collection(db, 'equipmentKits'), (snapshot) => {
-          if (!snapshot.empty) {
-            const list: EquipmentKit[] = [];
-            snapshot.forEach((docSnap) => list.push(docSnap.data() as EquipmentKit));
-            setEquipmentKits(list);
-          }
-        }, () => {
-          // ignore offline
-        });
-
-        unsubBoxes = onSnapshot(collection(db, 'cableBoxes'), (snapshot) => {
-          if (!snapshot.empty) {
-            const list: CableBox[] = [];
-            snapshot.forEach((docSnap) => list.push(docSnap.data() as CableBox));
-            setCableBoxes(list);
-          }
-        }, () => {
-          // ignore offline
-        });
+        if (isAdminUser) {
+          subscribeCollection<Contract>('contracts', setContracts, sortByDateDesc);
+        }
 
         setIsOfflineMode(false);
       } catch (err) {
         console.warn('Firestore connection failed, using local in-browser persistence:', err);
         setIsOfflineMode(true);
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     };
 
     initFirestoreSync();
 
     return () => {
-      if (unsubItems) unsubItems();
-      if (unsubEvents) unsubEvents();
-      if (unsubKits) unsubKits();
-      if (unsubBoxes) unsubBoxes();
+      cancelled = true;
+      unsubs.forEach((unsub) => unsub());
     };
   }, [isAuthenticated, isPending, userProfile?.role]);
 
@@ -468,12 +554,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       };
 
       setMovements((prev) => [newMovement, ...prev]);
-
-      try {
-        await setDoc(doc(db, 'movements', newMovement.id), newMovement);
-      } catch (err) {
-        console.warn('Could not record movement in Firestore, saved locally:', err);
-      }
+      await persistDoc('movements', newMovement.id, newMovement);
 
       return newMovement;
     },
@@ -509,7 +590,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
         const available = Math.max(0, item.totalQuantity - outCount - damagedCount - reservedCount);
 
-        return {
+        const nextItem: Item = {
           ...item,
           availableQuantity: available,
           reservedQuantity: reservedCount,
@@ -517,6 +598,8 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           damagedQuantity: damagedCount,
           updatedAt: new Date().toISOString(),
         };
+        void persistDoc('items', nextItem.id, nextItem);
+        return nextItem;
       })
     );
   }, [events, eventItems, itemUnits]);
@@ -650,11 +733,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       return exists ? prev.map((i) => (i.id === id ? fullItem : i)) : [fullItem, ...prev];
     });
 
-    try {
-      await setDoc(doc(db, 'items', id), fullItem);
-    } catch (err) {
-      console.warn('Could not save item to Firestore, saved locally:', err);
-    }
+    await persistDoc('items', id, fullItem);
 
     // Auto-generate physical serialized units if hasSerialNumbers is enabled
     if (fullItem.hasSerialNumbers) {
@@ -702,13 +781,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
       if (newUnitsToCreate.length > 0) {
         setItemUnits((prev) => [...newUnitsToCreate, ...prev]);
-        for (const unit of newUnitsToCreate) {
-          try {
-            await setDoc(doc(db, 'itemUnits', unit.id), unit);
-          } catch (e) {
-            // local persistence fallback
-          }
-        }
+        await Promise.all(newUnitsToCreate.map((unit) => persistDoc('itemUnits', unit.id, unit)));
       }
     }
 
@@ -734,6 +807,16 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const updateItemPrice = async (itemId: string, rentalPrice: number, purchasePrice?: number) => {
     const now = new Date().toISOString();
     const cleanRental = Math.max(0, Number(rentalPrice) || 0);
+    const existing = items.find((it) => it.id === itemId);
+    const updatedItem = existing
+      ? {
+          ...existing,
+          rentalPrice: cleanRental,
+          ...(purchasePrice !== undefined ? { purchasePrice: Math.max(0, Number(purchasePrice) || 0) } : {}),
+          updatedAt: now,
+        }
+      : null;
+
     setItems((prev) =>
       prev.map((it) => {
         if (it.id !== itemId) return it;
@@ -745,14 +828,19 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         };
       })
     );
-    try {
-      await updateDoc(doc(db, 'items', itemId), {
-        rentalPrice: cleanRental,
-        ...(purchasePrice !== undefined ? { purchasePrice: Math.max(0, Number(purchasePrice) || 0) } : {}),
-        updatedAt: now,
-      });
-    } catch {
-      // local fallback
+
+    if (updatedItem) {
+      await persistDoc('items', itemId, updatedItem);
+    } else {
+      try {
+        await updateDoc(doc(db, 'items', itemId), {
+          rentalPrice: cleanRental,
+          ...(purchasePrice !== undefined ? { purchasePrice: Math.max(0, Number(purchasePrice) || 0) } : {}),
+          updatedAt: now,
+        });
+      } catch {
+        // local fallback
+      }
     }
   };
 
@@ -807,11 +895,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           };
           updatedMap.set(existing.id, mergedItem);
           updated++;
-          try {
-            await setDoc(doc(db, 'items', existing.id), mergedItem);
-          } catch {
-            // offline fallback
-          }
+          await persistDoc('items', existing.id, mergedItem);
           continue;
         }
 
@@ -908,11 +992,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           }
         }
 
-        try {
-          await setDoc(doc(db, 'items', itemObj.id), itemObj);
-        } catch {
-          // offline fallback
-        }
+        await persistDoc('items', itemObj.id, itemObj);
       } catch (err: any) {
         errors.push(`Error en fila ${index + 1} (${row.name || 'desconocido'}): ${err.message}`);
       }
@@ -926,13 +1006,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }
     if (newUnits.length > 0) {
       setItemUnits((prev) => [...newUnits, ...prev]);
-      for (const u of newUnits) {
-        try {
-          await setDoc(doc(db, 'itemUnits', u.id), u);
-        } catch {
-          // offline fallback
-        }
-      }
+      await Promise.all(newUnits.map((u) => persistDoc('itemUnits', u.id, u)));
     }
 
     if (newItems.length > 0 || updatedMap.size > 0) {
@@ -986,22 +1060,14 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       return exists ? prev.map((k) => (k.id === id ? fullKit : k)) : [fullKit, ...prev];
     });
 
-    try {
-      await setDoc(doc(db, 'equipmentKits', id), fullKit);
-    } catch {
-      // local fallback
-    }
+    await persistDoc('equipmentKits', id, fullKit);
 
     return fullKit;
   };
 
   const deleteEquipmentKit = async (kitId: string) => {
     setEquipmentKits((prev) => prev.filter((k) => k.id !== kitId));
-    try {
-      await deleteDoc(doc(db, 'equipmentKits', kitId));
-    } catch {
-      // local fallback
-    }
+    await removeDoc('equipmentKits', kitId);
   };
 
   // --- Cable Boxes with QR & Breakage/Loss Deduction ---
@@ -1043,22 +1109,14 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       return exists ? prev.map((b) => (b.id === id ? fullBox : b)) : [fullBox, ...prev];
     });
 
-    try {
-      await setDoc(doc(db, 'cableBoxes', id), fullBox);
-    } catch {
-      // local fallback
-    }
+    await persistDoc('cableBoxes', id, fullBox);
 
     return fullBox;
   };
 
   const deleteCableBox = async (boxId: string) => {
     setCableBoxes((prev) => prev.filter((b) => b.id !== boxId));
-    try {
-      await deleteDoc(doc(db, 'cableBoxes', boxId));
-    } catch {
-      // local fallback
-    }
+    await removeDoc('cableBoxes', boxId);
   };
 
   const adjustCableBoxQuantity = async (
@@ -1107,46 +1165,40 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     };
 
     setCableBoxes((prev) => prev.map((b) => (b.id === boxId ? updatedBox : b)));
-    try {
-      await setDoc(doc(db, 'cableBoxes', boxId), updatedBox);
-    } catch {
-      // local fallback
-    }
+    await persistDoc('cableBoxes', boxId, updatedBox);
 
     // If linked to an inventory catalog item, adjust its damaged/total stock accordingly
     if (box.linkedItemId) {
       const linked = items.find((i) => i.id === box.linkedItemId);
       if (linked) {
-        setItems((prev) =>
-          prev.map((it) => {
-            if (it.id !== box.linkedItemId) return it;
-            if (type === 'broken') {
-              const newDamaged = it.damagedQuantity + cleanAmt;
-              return {
-                ...it,
-                damagedQuantity: newDamaged,
-                availableQuantity: Math.max(0, it.totalQuantity - it.outQuantity - newDamaged - it.reservedQuantity),
-                updatedAt: now,
-              };
-            }
-            if (type === 'lost') {
-              const newTotal = Math.max(0, it.totalQuantity - cleanAmt);
-              return {
-                ...it,
-                totalQuantity: newTotal,
-                availableQuantity: Math.max(0, newTotal - it.outQuantity - it.damagedQuantity - it.reservedQuantity),
-                updatedAt: now,
-              };
-            }
-            const newTotal = it.totalQuantity + cleanAmt;
-            return {
-              ...it,
-              totalQuantity: newTotal,
-              availableQuantity: Math.max(0, newTotal - it.outQuantity - it.damagedQuantity - it.reservedQuantity),
-              updatedAt: now,
-            };
-          })
-        );
+        let updatedLinked: Item;
+        if (type === 'broken') {
+          const newDamaged = linked.damagedQuantity + cleanAmt;
+          updatedLinked = {
+            ...linked,
+            damagedQuantity: newDamaged,
+            availableQuantity: Math.max(0, linked.totalQuantity - linked.outQuantity - newDamaged - linked.reservedQuantity),
+            updatedAt: now,
+          };
+        } else if (type === 'lost') {
+          const newTotal = Math.max(0, linked.totalQuantity - cleanAmt);
+          updatedLinked = {
+            ...linked,
+            totalQuantity: newTotal,
+            availableQuantity: Math.max(0, newTotal - linked.outQuantity - linked.damagedQuantity - linked.reservedQuantity),
+            updatedAt: now,
+          };
+        } else {
+          const newTotal = linked.totalQuantity + cleanAmt;
+          updatedLinked = {
+            ...linked,
+            totalQuantity: newTotal,
+            availableQuantity: Math.max(0, newTotal - linked.outQuantity - linked.damagedQuantity - linked.reservedQuantity),
+            updatedAt: now,
+          };
+        }
+        setItems((prev) => prev.map((it) => (it.id === linked.id ? updatedLinked : it)));
+        await persistDoc('items', linked.id, updatedLinked);
       }
     }
 
@@ -1291,29 +1343,34 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       throw new Error('El archivo JSON no tiene un formato de copia de seguridad válido de JD Control de Stock.');
     }
     let count = 0;
-    if (Array.isArray(data.items)) { setItems(data.items); count++; }
-    if (Array.isArray(data.itemUnits)) { setItemUnits(data.itemUnits); count++; }
-    if (Array.isArray(data.equipmentKits)) { setEquipmentKits(data.equipmentKits); count++; }
-    if (Array.isArray(data.cableBoxes)) { setCableBoxes(data.cableBoxes); count++; }
-    if (Array.isArray(data.categories)) { setCategories(data.categories); count++; }
-    if (Array.isArray(data.locations)) { setLocations(data.locations); count++; }
-    if (Array.isArray(data.events)) { setEvents(data.events); count++; }
-    if (Array.isArray(data.eventItems)) { setEventItems(data.eventItems); count++; }
-    if (Array.isArray(data.incidents)) { setIncidents(data.incidents); count++; }
-    if (Array.isArray(data.movements)) { setMovements(data.movements); count++; }
-    if (Array.isArray(data.clients)) { setClients(data.clients); count++; }
-    if (Array.isArray(data.suppliers)) { setSuppliers(data.suppliers); count++; }
-    if (Array.isArray(data.dispatches)) { setDispatches(data.dispatches); count++; }
-    if (Array.isArray(data.returns)) { setReturns(data.returns); count++; }
-    if (Array.isArray(data.purchases)) { setPurchases(data.purchases); count++; }
-    if (Array.isArray(data.inventorySessions)) { setInventorySessions(data.inventorySessions); count++; }
-    if (Array.isArray(data.contracts)) { setContracts(data.contracts); count++; }
+    const syncRestored = async <T extends { id: string }>(colName: string, arr: T[]) => {
+      await Promise.all(arr.filter((x) => x?.id).map((x) => persistDoc(colName, x.id, x)));
+    };
+    const syncTasks: Promise<void>[] = [];
+    if (Array.isArray(data.items)) { setItems(data.items); syncTasks.push(syncRestored('items', data.items)); count++; }
+    if (Array.isArray(data.itemUnits)) { setItemUnits(data.itemUnits); syncTasks.push(syncRestored('itemUnits', data.itemUnits)); count++; }
+    if (Array.isArray(data.equipmentKits)) { setEquipmentKits(data.equipmentKits); syncTasks.push(syncRestored('equipmentKits', data.equipmentKits)); count++; }
+    if (Array.isArray(data.cableBoxes)) { setCableBoxes(data.cableBoxes); syncTasks.push(syncRestored('cableBoxes', data.cableBoxes)); count++; }
+    if (Array.isArray(data.categories)) { setCategories(data.categories); syncTasks.push(syncRestored('categories', data.categories)); count++; }
+    if (Array.isArray(data.locations)) { setLocations(data.locations); syncTasks.push(syncRestored('locations', data.locations)); count++; }
+    if (Array.isArray(data.events)) { setEvents(data.events); syncTasks.push(syncRestored('events', data.events)); count++; }
+    if (Array.isArray(data.eventItems)) { setEventItems(data.eventItems); syncTasks.push(syncRestored('eventItems', data.eventItems)); count++; }
+    if (Array.isArray(data.incidents)) { setIncidents(data.incidents); syncTasks.push(syncRestored('incidents', data.incidents)); count++; }
+    if (Array.isArray(data.movements)) { setMovements(data.movements); syncTasks.push(syncRestored('movements', data.movements)); count++; }
+    if (Array.isArray(data.clients)) { setClients(data.clients); syncTasks.push(syncRestored('clients', data.clients)); count++; }
+    if (Array.isArray(data.suppliers)) { setSuppliers(data.suppliers); syncTasks.push(syncRestored('suppliers', data.suppliers)); count++; }
+    if (Array.isArray(data.dispatches)) { setDispatches(data.dispatches); syncTasks.push(syncRestored('dispatches', data.dispatches)); count++; }
+    if (Array.isArray(data.returns)) { setReturns(data.returns); syncTasks.push(syncRestored('returns', data.returns)); count++; }
+    if (Array.isArray(data.purchases)) { setPurchases(data.purchases); syncTasks.push(syncRestored('purchases', data.purchases)); count++; }
+    if (Array.isArray(data.inventorySessions)) { setInventorySessions(data.inventorySessions); syncTasks.push(syncRestored('inventorySessions', data.inventorySessions)); count++; }
+    if (Array.isArray(data.contracts)) { setContracts(data.contracts); if (userProfile?.role === 'admin') syncTasks.push(syncRestored('contracts', data.contracts)); count++; }
     if (data.companyFiscalConfig) { setCompanyFiscalConfig(data.companyFiscalConfig); count++; }
     if (data.defaultBankDetails) { setDefaultBankDetails(data.defaultBankDetails); count++; }
 
     if (count === 0) {
       throw new Error('No se encontraron colecciones de datos reconocibles en el archivo JSON.');
     }
+    await Promise.all(syncTasks);
     return { restoredCollections: count };
   };
 
@@ -1335,11 +1392,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     setItems((prev) => prev.map((i) => (i.id === itemId ? updatedItem : i)));
 
-    try {
-      await updateDoc(doc(db, 'items', itemId), { status: 'archived' });
-    } catch (err) {
-      console.warn('Firestore archive fallback to local:', err);
-    }
+    await persistDoc('items', itemId, updatedItem);
 
     await recordMovement({
       type: 'archive',
@@ -1384,11 +1437,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       return exists ? prev.map((u) => (u.id === id ? newUnit : u)) : [newUnit, ...prev];
     });
 
-    try {
-      await setDoc(doc(db, 'itemUnits', id), newUnit);
-    } catch (err) {
-      console.warn('Firestore unit save fallback to local:', err);
-    }
+    await persistDoc('itemUnits', id, newUnit);
 
     refreshItemStock(unitData.itemId);
     return newUnit;
@@ -1410,11 +1459,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       return exists ? prev.map((c) => (c.id === id ? category : c)) : [...prev, category];
     });
 
-    try {
-      await setDoc(doc(db, 'categories', id), category);
-    } catch (err) {
-      console.warn('Firestore category save fallback:', err);
-    }
+    await persistDoc('categories', id, category);
 
     return category;
   };
@@ -1435,11 +1480,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       return exists ? prev.map((l) => (l.id === id ? location : l)) : [...prev, location];
     });
 
-    try {
-      await setDoc(doc(db, 'locations', id), location);
-    } catch (err) {
-      console.warn('Firestore location save fallback:', err);
-    }
+    await persistDoc('locations', id, location);
 
     return location;
   };
@@ -1477,11 +1518,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       return exists ? prev.map((e) => (e.id === id ? fullEvent : e)) : [fullEvent, ...prev];
     });
 
-    try {
-      await setDoc(doc(db, 'events', id), fullEvent);
-    } catch (err) {
-      console.warn('Firestore event save fallback:', err);
-    }
+    await persistDoc('events', id, fullEvent);
 
     return fullEvent;
   };
@@ -1521,6 +1558,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       const exists = prev.some((l) => l.id === lineId);
       return exists ? prev.map((l) => (l.id === lineId ? updatedLine : l)) : [...prev, updatedLine];
     });
+    await persistDoc('eventItems', lineId, updatedLine);
 
     // Record reserve movement
     await recordMovement({
@@ -1549,6 +1587,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }
 
     setEventItems((prev) => prev.filter((l) => l.id !== eventItemId));
+    await removeDoc('eventItems', eventItemId);
 
     await recordMovement({
       type: 'cancel_reserve',
@@ -1575,12 +1614,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     const updated = { ...ev, status: newStatus, updatedAt: new Date().toISOString() };
 
     setEvents((prev) => prev.map((e) => (e.id === eventId ? updated : e)));
-
-    try {
-      await updateDoc(doc(db, 'events', eventId), { status: newStatus });
-    } catch (err) {
-      console.warn('Firestore updateEventStatus fallback:', err);
-    }
+    await persistDoc('events', eventId, updated);
 
     if (newStatus === 'cancelled' && oldStatus !== 'cancelled') {
       // Release any reserved units
@@ -1636,51 +1670,60 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
       // Update unit statuses if serialized
       if (prep.unitSerialNumbers && prep.unitSerialNumbers.length > 0) {
+        const nowIso = new Date().toISOString();
+        const updatedUnitsToSave: ItemUnit[] = [];
         setItemUnits((prevUnits) =>
           prevUnits.map((u) => {
             if (prep.unitSerialNumbers?.includes(u.serialNumber)) {
-              return {
+              const nextUnit: ItemUnit = {
                 ...u,
                 status: 'in_event',
                 currentEventId: targetEvent.id,
                 currentEventName: targetEvent.name,
-                updatedAt: new Date().toISOString(),
+                updatedAt: nowIso,
               };
+              updatedUnitsToSave.push(nextUnit);
+              return nextUnit;
             }
             return u;
           })
         );
+        for (const u of itemUnits.filter((u) => prep.unitSerialNumbers?.includes(u.serialNumber))) {
+          await persistDoc('itemUnits', u.id, {
+            ...u,
+            status: 'in_event',
+            currentEventId: targetEvent.id,
+            currentEventName: targetEvent.name,
+            updatedAt: nowIso,
+          });
+        }
       }
 
       // Update item quantities
-      setItems((prevItems) =>
-        prevItems.map((i) => {
-          if (i.id !== it.id) return i;
-          const newOut = i.outQuantity + prep.quantity;
-          const newAvail = Math.max(0, i.totalQuantity - newOut - i.damagedQuantity - i.reservedQuantity);
-          return {
-            ...i,
-            outQuantity: newOut,
-            availableQuantity: newAvail,
-            updatedAt: new Date().toISOString(),
-          };
-        })
-      );
+      const nowItemIso = new Date().toISOString();
+      const nextOut = it.outQuantity + prep.quantity;
+      const nextAvail = Math.max(0, it.totalQuantity - nextOut - it.damagedQuantity - it.reservedQuantity);
+      const updatedItem: Item = {
+        ...it,
+        outQuantity: nextOut,
+        availableQuantity: nextAvail,
+        updatedAt: nowItemIso,
+      };
+      setItems((prevItems) => prevItems.map((i) => (i.id === it.id ? updatedItem : i)));
+      await persistDoc('items', it.id, updatedItem);
 
       // Update eventItem line
-      setEventItems((prevLines) =>
-        prevLines.map((l) => {
-          if (l.eventId === eventId && l.itemId === prep.itemId) {
-            const newDispatched = l.quantityDispatched + prep.quantity;
-            return {
-              ...l,
-              quantityDispatched: newDispatched,
-              status: newDispatched >= l.quantityRequested ? 'dispatched' : 'partial',
-            };
-          }
-          return l;
-        })
-      );
+      const matchedLine = eventItems.find((l) => l.eventId === eventId && l.itemId === prep.itemId);
+      if (matchedLine) {
+        const newDispatched = matchedLine.quantityDispatched + prep.quantity;
+        const updatedLine: EventItem = {
+          ...matchedLine,
+          quantityDispatched: newDispatched,
+          status: newDispatched >= matchedLine.quantityRequested ? 'dispatched' : 'partial',
+        };
+        setEventItems((prevLines) => prevLines.map((l) => (l.id === matchedLine.id ? updatedLine : l)));
+        await persistDoc('eventItems', matchedLine.id, updatedLine);
+      }
 
       // Record immutable movement
       await recordMovement({
@@ -1706,14 +1749,6 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         unitSerialNumbers: prep.unitSerialNumbers,
       });
     }
-
-    // Determine event new status
-    const allLines = eventItems.filter((l) => l.eventId === eventId);
-    const allDispatched = allLines.every((l) => {
-      const match = preparedItems.find((p) => p.itemId === l.itemId);
-      const totalDisp = l.quantityDispatched + (match ? match.quantity : 0);
-      return totalDisp >= l.quantityRequested;
-    });
 
     const newEvStatus: AVEvent['status'] = 'dispatched';
     await updateEventStatus(eventId, newEvStatus);
@@ -1757,6 +1792,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       setDispatches((prev) => [dispatchNote, ...prev]);
     }
 
+    await persistDoc('dispatches', dispatchNote.id, dispatchNote);
     return dispatchNote;
   };
 
@@ -1792,6 +1828,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
       // Update serialized units
       if (ret.unitSerialNumbers && ret.unitSerialNumbers.length > 0) {
+        const nowIso = new Date().toISOString();
         setItemUnits((prevUnits) =>
           prevUnits.map((u) => {
             if (ret.unitSerialNumbers?.includes(u.serialNumber)) {
@@ -1803,47 +1840,55 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
                 currentEventId: null,
                 currentEventName: null,
                 notes: ret.incidentNotes || u.notes,
-                updatedAt: new Date().toISOString(),
+                updatedAt: nowIso,
               };
             }
             return u;
           })
         );
+        for (const u of itemUnits.filter((u) => ret.unitSerialNumbers?.includes(u.serialNumber))) {
+          await persistDoc('itemUnits', u.id, {
+            ...u,
+            status: isDamaged ? 'damaged' : 'available',
+            locationId: isDamaged ? 'loc-sat' : it.defaultLocationId,
+            locationName: isDamaged ? 'Taller Técnico y Zona de Reparación' : it.defaultLocationName,
+            currentEventId: null,
+            currentEventName: null,
+            notes: ret.incidentNotes || u.notes,
+            updatedAt: nowIso,
+          });
+        }
       }
 
       // Update item quantities: reduce outQuantity, if damaged increase damagedQuantity
-      setItems((prevItems) =>
-        prevItems.map((i) => {
-          if (i.id !== it.id) return i;
-          const newOut = Math.max(0, i.outQuantity - ret.quantity);
-          const newDamaged = isDamaged ? i.damagedQuantity + ret.quantity : i.damagedQuantity;
-          const newAvail = Math.max(0, i.totalQuantity - newOut - newDamaged - i.reservedQuantity);
-          return {
-            ...i,
-            outQuantity: newOut,
-            damagedQuantity: newDamaged,
-            availableQuantity: newAvail,
-            updatedAt: new Date().toISOString(),
-          };
-        })
-      );
+      const nowRetIso = new Date().toISOString();
+      const newOut = Math.max(0, it.outQuantity - ret.quantity);
+      const newDamaged = isDamaged ? it.damagedQuantity + ret.quantity : it.damagedQuantity;
+      const newAvail = Math.max(0, it.totalQuantity - newOut - newDamaged - it.reservedQuantity);
+      const updatedItem: Item = {
+        ...it,
+        outQuantity: newOut,
+        damagedQuantity: newDamaged,
+        availableQuantity: newAvail,
+        updatedAt: nowRetIso,
+      };
+      setItems((prevItems) => prevItems.map((i) => (i.id === it.id ? updatedItem : i)));
+      await persistDoc('items', it.id, updatedItem);
 
       // Update eventItem line
-      setEventItems((prevLines) =>
-        prevLines.map((l) => {
-          if (l.eventId === eventId && l.itemId === ret.itemId) {
-            const newReturned = l.quantityReturned + ret.quantity;
-            const newDamaged = isDamaged ? l.quantityDamaged + ret.quantity : l.quantityDamaged;
-            return {
-              ...l,
-              quantityReturned: newReturned,
-              quantityDamaged: newDamaged,
-              status: isDamaged ? 'returned_damaged' : newReturned >= l.quantityDispatched ? 'returned_ok' : 'partial',
-            };
-          }
-          return l;
-        })
-      );
+      const matchedLine = eventItems.find((l) => l.eventId === eventId && l.itemId === ret.itemId);
+      if (matchedLine) {
+        const newReturned = matchedLine.quantityReturned + ret.quantity;
+        const newLineDamaged = isDamaged ? matchedLine.quantityDamaged + ret.quantity : matchedLine.quantityDamaged;
+        const updatedLine: EventItem = {
+          ...matchedLine,
+          quantityReturned: newReturned,
+          quantityDamaged: newLineDamaged,
+          status: isDamaged ? 'returned_damaged' : newReturned >= matchedLine.quantityDispatched ? 'returned_ok' : 'partial',
+        };
+        setEventItems((prevLines) => prevLines.map((l) => (l.id === matchedLine.id ? updatedLine : l)));
+        await persistDoc('eventItems', matchedLine.id, updatedLine);
+      }
 
       // Automatically create an Incident in SAT if returned damaged!
       if (isDamaged) {
@@ -1916,6 +1961,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     };
 
     setReturns((prev) => [returnNote, ...prev]);
+    await persistDoc('returns', returnNote.id, returnNote);
     return returnNote;
   };
 
@@ -1945,6 +1991,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     };
 
     setIncidents((prev) => [incident, ...prev]);
+    await persistDoc('incidents', incident.id, incident);
 
     // Record movement to repair zone
     await recordMovement({
@@ -1994,30 +2041,31 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     };
 
     setIncidents((prev) => prev.map((i) => (i.id === incidentId ? updatedInc : i)));
+    await persistDoc('incidents', incidentId, updatedInc);
 
     // If repaired, restore stock and unit status
     if (isRepaired && inc.status !== 'repaired' && inc.status !== 'closed') {
       const it = items.find((i) => i.id === inc.itemId);
       if (it) {
-        setItems((prev) =>
-          prev.map((item) => {
-            if (item.id !== it.id) return item;
-            const newDamaged = Math.max(0, item.damagedQuantity - 1);
-            const newAvail = Math.max(0, item.totalQuantity - item.outQuantity - newDamaged - item.reservedQuantity);
-            return {
-              ...item,
-              damagedQuantity: newDamaged,
-              availableQuantity: newAvail,
-              updatedAt: now,
-            };
-          })
-        );
+        const newDamaged = Math.max(0, it.damagedQuantity - 1);
+        const newAvail = Math.max(0, it.totalQuantity - it.outQuantity - newDamaged - it.reservedQuantity);
+        const updatedItem: Item = {
+          ...it,
+          damagedQuantity: newDamaged,
+          availableQuantity: newAvail,
+          updatedAt: now,
+        };
+        setItems((prev) => prev.map((item) => (item.id === it.id ? updatedItem : item)));
+        await persistDoc('items', it.id, updatedItem);
       }
 
       if (inc.unitId) {
-        setItemUnits((prev) =>
-          prev.map((u) => (u.id === inc.unitId ? { ...u, status: 'available', updatedAt: now } : u))
-        );
+        const targetUnit = itemUnits.find((u) => u.id === inc.unitId);
+        if (targetUnit) {
+          const restoredUnit: ItemUnit = { ...targetUnit, status: 'available', updatedAt: now };
+          setItemUnits((prev) => prev.map((u) => (u.id === inc.unitId ? restoredUnit : u)));
+          await persistDoc('itemUnits', inc.unitId, restoredUnit);
+        }
       }
 
       await recordMovement({
@@ -2047,18 +2095,16 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (!item) return;
 
     if (unitId) {
-      setItemUnits((prev) =>
-        prev.map((u) => {
-          if (u.id === unitId) {
-            return {
-              ...u,
-              locationName: targetLoc,
-              updatedAt: new Date().toISOString(),
-            };
-          }
-          return u;
-        })
-      );
+      const targetUnit = itemUnits.find((u) => u.id === unitId);
+      if (targetUnit) {
+        const updatedUnit: ItemUnit = {
+          ...targetUnit,
+          locationName: targetLoc,
+          updatedAt: new Date().toISOString(),
+        };
+        setItemUnits((prev) => prev.map((u) => (u.id === unitId ? updatedUnit : u)));
+        await persistDoc('itemUnits', unitId, updatedUnit);
+      }
     }
 
     await recordMovement({
@@ -2088,24 +2134,20 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     };
 
     setPurchases((prev) => [purchase, ...prev]);
+    await persistDoc('purchases', purchase.id, purchase);
 
     // Update item totalQuantity and stock
     for (const line of data.items) {
       const it = items.find((i) => i.id === line.itemId);
       if (it) {
-        setItems((prev) =>
-          prev.map((item) => {
-            if (item.id !== it.id) return item;
-            const newTotal = item.totalQuantity + line.quantity;
-            const newAvail = item.availableQuantity + line.quantity;
-            return {
-              ...item,
-              totalQuantity: newTotal,
-              availableQuantity: newAvail,
-              updatedAt: now,
-            };
-          })
-        );
+        const updatedItem: Item = {
+          ...it,
+          totalQuantity: it.totalQuantity + line.quantity,
+          availableQuantity: it.availableQuantity + line.quantity,
+          updatedAt: now,
+        };
+        setItems((prev) => prev.map((item) => (item.id === it.id ? updatedItem : item)));
+        await persistDoc('items', it.id, updatedItem);
 
         await recordMovement({
           type: 'in',
@@ -2130,16 +2172,15 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     photoUrl: string,
     noteNumber?: string
   ): Promise<void> => {
-    setPurchases((prev) =>
-      prev.map((p) => {
-        if (p.id !== purchaseId) return p;
-        return {
-          ...p,
-          deliveryNotePhotoUrl: photoUrl,
-          ...(noteNumber ? { deliveryNoteNumber: noteNumber } : {}),
-        };
-      })
-    );
+    const existing = purchases.find((p) => p.id === purchaseId);
+    if (!existing) return;
+    const updatedPurchase: Purchase = {
+      ...existing,
+      deliveryNotePhotoUrl: photoUrl,
+      ...(noteNumber ? { deliveryNoteNumber: noteNumber } : {}),
+    };
+    setPurchases((prev) => prev.map((p) => (p.id === purchaseId ? updatedPurchase : p)));
+    await persistDoc('purchases', purchaseId, updatedPurchase);
   };
 
   // Physical Inventory Count Session
@@ -2167,13 +2208,16 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     };
 
     setInventorySessions((prev) => [session, ...prev]);
+    await persistDoc('inventorySessions', session.id, session);
     return session;
   };
 
   const saveInventoryCount = async (sessionId: string, lines: InventorySession['lines']) => {
-    setInventorySessions((prev) =>
-      prev.map((s) => (s.id === sessionId ? { ...s, lines, status: 'pending_approval' } : s))
-    );
+    const existing = inventorySessions.find((s) => s.id === sessionId);
+    if (!existing) return;
+    const updatedSession: InventorySession = { ...existing, lines, status: 'pending_approval' };
+    setInventorySessions((prev) => prev.map((s) => (s.id === sessionId ? updatedSession : s)));
+    await persistDoc('inventorySessions', sessionId, updatedSession);
   };
 
   const regularizeInventory = async (sessionId: string, authorizedBy: string) => {
@@ -2187,19 +2231,14 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         const it = items.find((i) => i.id === line.itemId);
         if (it) {
           const diff = line.discrepancy;
-          setItems((prev) =>
-            prev.map((item) => {
-              if (item.id !== it.id) return item;
-              const newTotal = Math.max(0, item.totalQuantity + diff);
-              const newAvail = Math.max(0, item.availableQuantity + diff);
-              return {
-                ...item,
-                totalQuantity: newTotal,
-                availableQuantity: newAvail,
-                updatedAt: now,
-              };
-            })
-          );
+          const updatedItem: Item = {
+            ...it,
+            totalQuantity: Math.max(0, it.totalQuantity + diff),
+            availableQuantity: Math.max(0, it.availableQuantity + diff),
+            updatedAt: now,
+          };
+          setItems((prev) => prev.map((item) => (item.id === it.id ? updatedItem : item)));
+          await persistDoc('items', it.id, updatedItem);
 
           await recordMovement({
             type: 'adjustment',
@@ -2217,21 +2256,17 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       }
     }
 
-    setInventorySessions((prev) =>
-      prev.map((s) =>
-        s.id === sessionId
-          ? {
-              ...s,
-              status: 'approved',
-              approvedBy: authorizedBy,
-              completionDate: now,
-            }
-          : s
-      )
-    );
+    const approvedSession: InventorySession = {
+      ...session,
+      status: 'approved',
+      approvedBy: authorizedBy,
+      completionDate: now,
+    };
+    setInventorySessions((prev) => prev.map((s) => (s.id === sessionId ? approvedSession : s)));
+    await persistDoc('inventorySessions', sessionId, approvedSession);
   };
 
-  // Clients & Suppliers
+  // Clients & Suppliers — synced instantly in real time across Admin, Encargado & Técnico
   const saveClient = async (data: Partial<Client> & { name: string }): Promise<Client> => {
     const id = data.id || `cli-${Date.now()}`;
     const client: Client = {
@@ -2250,6 +2285,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       const exists = prev.some((c) => c.id === id);
       return exists ? prev.map((c) => (c.id === id ? client : c)) : [client, ...prev];
     });
+    await persistDoc('clients', id, client);
 
     return client;
   };
@@ -2273,6 +2309,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       const exists = prev.some((s) => s.id === id);
       return exists ? prev.map((s) => (s.id === id ? supplier : s)) : [supplier, ...prev];
     });
+    await persistDoc('suppliers', id, supplier);
 
     return supplier;
   };
@@ -2377,12 +2414,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     await syncContractWithDispatch(newContract);
 
     setContracts((prev) => [newContract, ...prev]);
-
-    try {
-      await setDoc(doc(db, 'contracts', newContract.id), newContract);
-    } catch (e) {
-      console.warn('Could not sync contract to Firestore:', e);
-    }
+    await persistDoc('contracts', newContract.id, newContract);
 
     return newContract;
   };
@@ -2418,36 +2450,38 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         updatedAt: now,
       };
       setEvents((prev) => [targetEvent!, ...prev]);
+      await persistDoc('events', targetEvent.id, targetEvent);
     }
 
     // 2. Ensure Event Items exist so reservation is recorded
     if (contract.items && contract.items.length > 0) {
-      setEventItems((prev) => {
-        const updated = [...prev];
-        contract.items.forEach((ci) => {
-          const matchedItem = items.find(
-            (i) => i.id === ci.itemId || i.name.toLowerCase() === ci.itemName.toLowerCase()
-          );
-          const itemId = matchedItem?.id || ci.itemId || `item-${Date.now()}`;
-          const existing = updated.find((ei) => ei.eventId === targetEvent!.id && ei.itemId === itemId);
-          if (!existing) {
-            updated.push({
-              id: `evi-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-              eventId: targetEvent!.id,
-              itemId,
-              itemName: ci.itemName,
-              itemCode: matchedItem?.code || ci.itemCode || 'EQ-AV',
-              brand: matchedItem?.brand || 'Genérico',
-              quantityRequested: ci.quantity,
-              quantityDispatched: 0,
-              quantityReturned: 0,
-              quantityDamaged: 0,
-              status: 'requested',
-            });
-          }
-        });
-        return updated;
+      const newEventLines: EventItem[] = [];
+      contract.items.forEach((ci) => {
+        const matchedItem = items.find(
+          (i) => i.id === ci.itemId || i.name.toLowerCase() === ci.itemName.toLowerCase()
+        );
+        const itemId = matchedItem?.id || ci.itemId || `item-${Date.now()}`;
+        const existing = eventItems.find((ei) => ei.eventId === targetEvent!.id && ei.itemId === itemId);
+        if (!existing) {
+          newEventLines.push({
+            id: `evi-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+            eventId: targetEvent!.id,
+            itemId,
+            itemName: ci.itemName,
+            itemCode: matchedItem?.code || ci.itemCode || 'EQ-AV',
+            brand: matchedItem?.brand || 'Genérico',
+            quantityRequested: ci.quantity,
+            quantityDispatched: 0,
+            quantityReturned: 0,
+            quantityDamaged: 0,
+            status: 'requested',
+          });
+        }
       });
+      if (newEventLines.length > 0) {
+        setEventItems((prev) => [...prev, ...newEventLines]);
+        await Promise.all(newEventLines.map((line) => persistDoc('eventItems', line.id, line)));
+      }
     }
 
     // 3. Automatically create or synchronize Dispatch Note (Albarán de Salida)
@@ -2459,14 +2493,12 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       quantity: ci.quantity,
     }));
 
-    setDispatches((prev) => {
-      const exists = prev.find((d) => d.contractId === contract.id || d.contractCode === contract.code);
-      if (exists) {
-        return prev.map((d) =>
-          d.id === exists.id ? { ...d, contractSections } : d
-        );
-      }
-
+    const existingDisp = dispatches.find((d) => d.contractId === contract.id || d.contractCode === contract.code);
+    if (existingDisp) {
+      const updatedDisp: DispatchNote = { ...existingDisp, contractSections };
+      setDispatches((prev) => prev.map((d) => (d.id === existingDisp.id ? updatedDisp : d)));
+      await persistDoc('dispatches', updatedDisp.id, updatedDisp);
+    } else {
       const newDispatch: DispatchNote = {
         id: `dsp-${Date.now()}`,
         code: dispatchCode,
@@ -2503,8 +2535,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         createdAt: now,
       };
 
-      return [newDispatch, ...prev];
-    });
+      setDispatches((prev) => [newDispatch, ...prev]);
+      await persistDoc('dispatches', newDispatch.id, newDispatch);
+    }
   };
 
   const saveContract = async (
@@ -2564,12 +2597,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     // Automatically create/sync linked Event and Dispatch Note (Albarán de Salida)
     await syncContractWithDispatch(contract);
-
-    try {
-      await setDoc(doc(db, 'contracts', id), contract);
-    } catch (e) {
-      console.warn('Could not sync contract to Firestore:', e);
-    }
+    await persistDoc('contracts', id, contract);
 
     return contract;
   };
@@ -2601,15 +2629,15 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       }
     }
 
-    try {
-      await setDoc(doc(db, 'contracts', contractId), updated);
-    } catch (e) {
-      console.warn('Could not update contract in Firestore:', e);
-    }
+    await persistDoc('contracts', contractId, updated);
   };
 
   const deleteContract = async (contractId: string): Promise<void> => {
-    setContracts((prev) => prev.map((c) => (c.id === contractId ? { ...c, status: 'cancelled' } : c)));
+    const target = contracts.find((c) => c.id === contractId);
+    if (!target) return;
+    const cancelledContract: Contract = { ...target, status: 'cancelled', updatedAt: new Date().toISOString() };
+    setContracts((prev) => prev.map((c) => (c.id === contractId ? cancelledContract : c)));
+    await persistDoc('contracts', contractId, cancelledContract);
   };
 
   const updateCompanyFiscalConfig = (newConfig: Partial<CompanyFiscalConfig>) => {
@@ -2628,19 +2656,18 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     driverSignatureUrl?: string
   ): Promise<void> => {
     const now = new Date().toISOString();
-    setDispatches((prev) =>
-      prev.map((d) => {
-        if (d.id !== dispatchId) return d;
-        return {
-          ...d,
-          clientSignatureUrl: signatureUrl,
-          signerName,
-          signerDni,
-          signedAt: now,
-          ...(driverSignatureUrl ? { driverSignatureUrl } : {}),
-        };
-      })
-    );
+    const existing = dispatches.find((d) => d.id === dispatchId);
+    if (!existing) return;
+    const signedDispatch: DispatchNote = {
+      ...existing,
+      clientSignatureUrl: signatureUrl,
+      signerName,
+      signerDni,
+      signedAt: now,
+      ...(driverSignatureUrl ? { driverSignatureUrl } : {}),
+    };
+    setDispatches((prev) => prev.map((d) => (d.id === dispatchId ? signedDispatch : d)));
+    await persistDoc('dispatches', dispatchId, signedDispatch);
   };
 
   const removeItemFromDispatch = async (
@@ -2678,15 +2705,12 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     // Restore inventory stock
     const it = items.find((i) => i.id === itemId);
     if (it) {
+      const nowIso = new Date().toISOString();
       const newOut = Math.max(0, it.outQuantity - toRemove);
       const newAvail = Math.max(0, it.totalQuantity - newOut - it.damagedQuantity - it.reservedQuantity);
-      setItems((prev) =>
-        prev.map((item) =>
-          item.id === itemId
-            ? { ...item, outQuantity: newOut, availableQuantity: newAvail, updatedAt: new Date().toISOString() }
-            : item
-        )
-      );
+      const updatedItem: Item = { ...it, outQuantity: newOut, availableQuantity: newAvail, updatedAt: nowIso };
+      setItems((prev) => prev.map((item) => (item.id === itemId ? updatedItem : item)));
+      await persistDoc('items', itemId, updatedItem);
 
       // Restore serialized units status
       if (itemInDisp.unitSerialNumbers && itemInDisp.unitSerialNumbers.length > 0) {
@@ -2694,10 +2718,18 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         setItemUnits((prevUnits) =>
           prevUnits.map((u) =>
             freedSerials.includes(u.serialNumber)
-              ? { ...u, status: 'available', locationName: it.defaultLocationName }
+              ? { ...u, status: 'available', locationName: it.defaultLocationName, updatedAt: nowIso }
               : u
           )
         );
+        for (const u of itemUnits.filter((u) => freedSerials.includes(u.serialNumber))) {
+          await persistDoc('itemUnits', u.id, {
+            ...u,
+            status: 'available',
+            locationName: it.defaultLocationName,
+            updatedAt: nowIso,
+          });
+        }
       }
 
       await recordMovement({
@@ -2715,9 +2747,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       });
     }
 
-    setDispatches((prev) =>
-      prev.map((d) => (d.id === dispatchId ? { ...d, items: newItems } : d))
-    );
+    const updatedDisp: DispatchNote = { ...disp, items: newItems };
+    setDispatches((prev) => prev.map((d) => (d.id === dispatchId ? updatedDisp : d)));
+    await persistDoc('dispatches', dispatchId, updatedDisp);
   };
 
   const addItemToDispatch = async (
@@ -2750,23 +2782,28 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
       const newOut = Math.min(it.totalQuantity, it.outQuantity + extraItem.quantity);
       const newAvail = Math.max(0, it.totalQuantity - newOut - it.damagedQuantity - it.reservedQuantity);
-      setItems((prev) =>
-        prev.map((item) =>
-          item.id === extraItem.itemId
-            ? { ...item, outQuantity: newOut, availableQuantity: newAvail, updatedAt: now }
-            : item
-        )
-      );
+      const updatedItem: Item = { ...it, outQuantity: newOut, availableQuantity: newAvail, updatedAt: now };
+      setItems((prev) => prev.map((item) => (item.id === extraItem.itemId ? updatedItem : item)));
+      await persistDoc('items', extraItem.itemId, updatedItem);
     }
 
     if (extraItem.unitSerialNumbers && extraItem.unitSerialNumbers.length > 0) {
       setItemUnits((prevUnits) =>
         prevUnits.map((u) =>
           extraItem.unitSerialNumbers?.includes(u.serialNumber)
-            ? { ...u, status: 'in_event', currentEventId: disp.eventId, currentEventName: disp.eventName }
+            ? { ...u, status: 'in_event', currentEventId: disp.eventId, currentEventName: disp.eventName, updatedAt: now }
             : u
         )
       );
+      for (const u of itemUnits.filter((u) => extraItem.unitSerialNumbers?.includes(u.serialNumber))) {
+        await persistDoc('itemUnits', u.id, {
+          ...u,
+          status: 'in_event',
+          currentEventId: disp.eventId,
+          currentEventName: disp.eventName,
+          updatedAt: now,
+        });
+      }
     }
 
     const existingIndex = disp.items.findIndex(
@@ -2820,17 +2857,13 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       referenceCode: disp.code,
     });
 
-    setDispatches((prev) =>
-      prev.map((d) =>
-        d.id === dispatchId
-          ? {
-              ...d,
-              items: updatedItems,
-              preparedBy: userProfile?.name || d.preparedBy,
-            }
-          : d
-      )
-    );
+    const updatedDisp: DispatchNote = {
+      ...disp,
+      items: updatedItems,
+      preparedBy: userProfile?.name || disp.preparedBy,
+    };
+    setDispatches((prev) => prev.map((d) => (d.id === dispatchId ? updatedDisp : d)));
+    await persistDoc('dispatches', dispatchId, updatedDisp);
   };
 
   // Scan QR code directly into a Dispatch Note Section (e.g., Apartado "Sonido") to verify physical exit
@@ -2861,13 +2894,15 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         kitId: kit.id,
         kitComponentsSummary: summary,
       });
-      setEquipmentKits((prev) =>
-        prev.map((k) =>
-          k.id === kit.id
-            ? { ...k, status: 'in_event', currentEventId: disp.eventId, currentEventName: disp.eventName, updatedAt: now }
-            : k
-        )
-      );
+      const updatedKit: EquipmentKit = {
+        ...kit,
+        status: 'in_event',
+        currentEventId: disp.eventId,
+        currentEventName: disp.eventName,
+        updatedAt: now,
+      };
+      setEquipmentKits((prev) => prev.map((k) => (k.id === kit.id ? updatedKit : k)));
+      await persistDoc('equipmentKits', kit.id, updatedKit);
       return { label: `${kit.name} (${kit.components.length} elementos)`, kind: 'kit' };
     }
 
@@ -2884,9 +2919,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         cableBoxId: box.id,
         kitComponentsSummary: `${box.currentQuantity} cables ${box.cableType} (${box.cableLength || 'Estándar'})`,
       });
-      setCableBoxes((prev) =>
-        prev.map((b) => (b.id === box.id ? { ...b, status: 'in_event', updatedAt: now } : b))
-      );
+      const updatedBox: CableBox = { ...box, status: 'in_event', updatedAt: now };
+      setCableBoxes((prev) => prev.map((b) => (b.id === box.id ? updatedBox : b)));
+      await persistDoc('cableBoxes', box.id, updatedBox);
       return { label: `${box.name} — ${box.currentQuantity} cables`, kind: 'cable_box' };
     }
 
@@ -2969,20 +3004,16 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     };
 
     setIncidents((prev) => [incident, ...prev]);
+    await persistDoc('incidents', incident.id, incident);
 
-    setItems((prev) =>
-      prev.map((item) => {
-        if (item.id !== it.id) return item;
-        const newDamaged = item.damagedQuantity + quantity;
-        const newAvail = Math.max(0, item.availableQuantity - quantity);
-        return {
-          ...item,
-          damagedQuantity: newDamaged,
-          availableQuantity: newAvail,
-          updatedAt: now,
-        };
-      })
-    );
+    const updatedItemFromPurchase: Item = {
+      ...it,
+      damagedQuantity: it.damagedQuantity + quantity,
+      availableQuantity: Math.max(0, it.availableQuantity - quantity),
+      updatedAt: now,
+    };
+    setItems((prev) => prev.map((item) => (item.id === it.id ? updatedItemFromPurchase : item)));
+    await persistDoc('items', it.id, updatedItemFromPurchase);
 
     await recordMovement({
       type: 'repair_send',
@@ -3046,23 +3077,18 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     };
 
     setIncidents((prev) => [incident, ...prev]);
+    await persistDoc('incidents', incident.id, incident);
 
     // Update item stock: increment damaged, decrement available (and out if during return)
-    setItems((prev) =>
-      prev.map((item) => {
-        if (item.id !== it.id) return item;
-        const newDamaged = item.damagedQuantity + data.quantity;
-        const newAvail = Math.max(0, item.availableQuantity - data.quantity);
-        const newOut = data.sourceContext === 'return' ? Math.max(0, item.outQuantity - data.quantity) : item.outQuantity;
-        return {
-          ...item,
-          damagedQuantity: newDamaged,
-          availableQuantity: newAvail,
-          outQuantity: newOut,
-          updatedAt: now,
-        };
-      })
-    );
+    const updatedDamagedItem: Item = {
+      ...it,
+      damagedQuantity: it.damagedQuantity + data.quantity,
+      availableQuantity: Math.max(0, it.availableQuantity - data.quantity),
+      outQuantity: data.sourceContext === 'return' ? Math.max(0, it.outQuantity - data.quantity) : it.outQuantity,
+      updatedAt: now,
+    };
+    setItems((prev) => prev.map((item) => (item.id === it.id ? updatedDamagedItem : item)));
+    await persistDoc('items', it.id, updatedDamagedItem);
 
     // Update serialized units to damaged status if serials provided
     if (data.serialNumbers && data.serialNumbers.length > 0) {
@@ -3073,11 +3099,21 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
                 ...u,
                 status: 'damaged',
                 locationName: 'Taller Técnico y SAT',
-                incidentNotes: data.description,
+                notes: data.description,
+                updatedAt: now,
               }
             : u
         )
       );
+      for (const u of itemUnits.filter((u) => data.serialNumbers?.includes(u.serialNumber))) {
+        await persistDoc('itemUnits', u.id, {
+          ...u,
+          status: 'damaged',
+          locationName: 'Taller Técnico y SAT',
+          notes: data.description,
+          updatedAt: now,
+        });
+      }
     }
 
     // Register movement
@@ -3116,22 +3152,22 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setInventorySessions([]);
     setContracts(INITIAL_CONTRACTS);
 
-    try {
-      for (const item of INITIAL_ITEMS) {
-        await setDoc(doc(db, 'items', item.id), item);
-      }
-      for (const ev of INITIAL_EVENTS) {
-        await setDoc(doc(db, 'events', ev.id), ev);
-      }
-      for (const kit of INITIAL_EQUIPMENT_KITS) {
-        await setDoc(doc(db, 'equipmentKits', kit.id), kit);
-      }
-      for (const box of INITIAL_CABLE_BOXES) {
-        await setDoc(doc(db, 'cableBoxes', box.id), box);
-      }
-    } catch (e) {
-      console.warn('Seeding to Firestore error:', e);
-    }
+    await Promise.all([
+      ...INITIAL_ITEMS.map((item) => persistDoc('items', item.id, item)),
+      ...INITIAL_UNITS.map((unit) => persistDoc('itemUnits', unit.id, unit)),
+      ...INITIAL_CATEGORIES.map((cat) => persistDoc('categories', cat.id, cat)),
+      ...INITIAL_LOCATIONS.map((loc) => persistDoc('locations', loc.id, loc)),
+      ...INITIAL_CLIENTS.map((cli) => persistDoc('clients', cli.id, cli)),
+      ...INITIAL_SUPPLIERS.map((sup) => persistDoc('suppliers', sup.id, sup)),
+      ...INITIAL_EVENTS.map((ev) => persistDoc('events', ev.id, ev)),
+      ...INITIAL_EVENT_ITEMS.map((ei) => persistDoc('eventItems', ei.id, ei)),
+      ...INITIAL_DISPATCHES.map((dsp) => persistDoc('dispatches', dsp.id, dsp)),
+      ...INITIAL_INCIDENTS.map((inc) => persistDoc('incidents', inc.id, inc)),
+      ...INITIAL_MOVEMENTS.map((mov) => persistDoc('movements', mov.id, mov)),
+      ...INITIAL_EQUIPMENT_KITS.map((kit) => persistDoc('equipmentKits', kit.id, kit)),
+      ...INITIAL_CABLE_BOXES.map((box) => persistDoc('cableBoxes', box.id, box)),
+      ...(userProfile?.role === 'admin' ? INITIAL_CONTRACTS.map((ctr) => persistDoc('contracts', ctr.id, ctr)) : []),
+    ]);
   };
 
   // Clear all demo items, units, movements, contracts and events to start completely from 0
@@ -3169,7 +3205,22 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     localStorage.setItem('prompt_maestro_contracts', JSON.stringify([]));
 
     try {
-      const collectionsToClear = ['items', 'events', 'itemUnits', 'contracts', 'equipmentKits', 'cableBoxes'];
+      const collectionsToClear = [
+        'items',
+        'itemUnits',
+        'events',
+        'eventItems',
+        'dispatches',
+        'returns',
+        'incidents',
+        'purchases',
+        'inventorySessions',
+        'clients',
+        'suppliers',
+        'equipmentKits',
+        'cableBoxes',
+        ...(userProfile?.role === 'admin' ? ['contracts'] : []),
+      ];
       for (const colName of collectionsToClear) {
         const snap = await getDocs(collection(db, colName));
         for (const d of snap.docs) {

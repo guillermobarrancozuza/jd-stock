@@ -300,6 +300,61 @@
       },
       "required": ["id", "code", "name", "qrCode", "initialQuantity", "currentQuantity"]
     },
+    "DispatchNote": {
+      "title": "DispatchNote",
+      "description": "Albarán de salida y picking de material para eventos",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "code": { "type": "string" },
+        "eventId": { "type": "string" },
+        "eventName": { "type": "string" },
+        "clientName": { "type": "string" },
+        "preparedBy": { "type": "string" },
+        "authorizedBy": { "type": "string" },
+        "dispatchDate": { "type": "string" },
+        "status": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "code", "eventId", "status"]
+    },
+    "ReturnNote": {
+      "title": "ReturnNote",
+      "description": "Albarán de devolución y revisión técnica de retorno de material",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "code": { "type": "string" },
+        "eventId": { "type": "string" },
+        "eventCode": { "type": "string" },
+        "eventName": { "type": "string" },
+        "receivedBy": { "type": "string" },
+        "returnDate": { "type": "string" },
+        "hasIncidents": { "type": "boolean" },
+        "notes": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "code", "eventId", "receivedBy", "returnDate"]
+    },
+    "Contract": {
+      "title": "Contract",
+      "description": "Contrato comercial y reserva del 10% (acceso exclusivo Administrador Jefe)",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "code": { "type": "string" },
+        "eventId": { "type": "string" },
+        "eventName": { "type": "string" },
+        "clientId": { "type": "string" },
+        "clientName": { "type": "string" },
+        "totalAmount": { "type": "number" },
+        "depositAmount": { "type": "number" },
+        "status": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "code", "eventName", "totalAmount", "status"]
+    },
     "ScannerBridge": {
       "title": "ScannerBridge",
       "description": "Canal privado en tiempo real por usuario para vincular el escáner QR del móvil con la sesión abierta en el PC",
@@ -377,6 +432,18 @@
     "/cableBoxes/{boxId}": {
       "schema": { "$ref": "#/entities/CableBox" },
       "description": "Cajas de cables con QR conjunto y control de roturas/pérdidas"
+    },
+    "/dispatches/{dispatchId}": {
+      "schema": { "$ref": "#/entities/DispatchNote" },
+      "description": "Albaranes de salida de material"
+    },
+    "/returns/{returnId}": {
+      "schema": { "$ref": "#/entities/ReturnNote" },
+      "description": "Albaranes de devolución de material"
+    },
+    "/contracts/{contractId}": {
+      "schema": { "$ref": "#/entities/Contract" },
+      "description": "Contratos comerciales y reservas del 10% (solo Administrador Jefe)"
     },
     "/scanner_bridge/{userId}": {
       "schema": { "$ref": "#/entities/ScannerBridge" },
