@@ -21,7 +21,7 @@ import {
   Smartphone,
 } from 'lucide-react';
 import { useInventory } from '../../context/InventoryContext.tsx';
-import { Item, ItemUnit, EquipmentKit, CableBox } from '../../types/inventory.ts';
+import { Item, ItemUnit, EquipmentKit, CableBox, ConsumableItem } from '../../types/inventory.ts';
 import { findUnitOrItemByCode, ScannedMatchResult } from '../../lib/qrScannerUtils.ts';
 
 interface MobileScannerModalProps {
@@ -40,6 +40,7 @@ interface ScanRecord {
   unit?: ItemUnit;
   kit?: EquipmentKit;
   cableBox?: CableBox;
+  consumable?: ConsumableItem;
   contractCode?: string;
   isRecognized: boolean;
   match: ScannedMatchResult;
@@ -53,7 +54,7 @@ export const MobileScannerModal: React.FC<MobileScannerModalProps> = ({
   onQrResolved,
   onOpenRemoteLinkModal,
 }) => {
-  const { items, itemUnits, equipmentKits, cableBoxes, contracts } = useInventory();
+  const { items, itemUnits, equipmentKits, cableBoxes, consumables, contracts } = useInventory();
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -115,7 +116,8 @@ export const MobileScannerModal: React.FC<MobileScannerModalProps> = ({
       items,
       equipmentKits,
       cableBoxes,
-      contracts
+      contracts,
+      consumables
     );
 
     return {
@@ -125,6 +127,7 @@ export const MobileScannerModal: React.FC<MobileScannerModalProps> = ({
       unit: match.unit || undefined,
       kit: match.kit || undefined,
       cableBox: match.cableBox || undefined,
+      consumable: match.consumable || undefined,
       contractCode: match.contract?.code,
       isRecognized: match.isDirectMatch,
       match,
@@ -464,6 +467,7 @@ export const MobileScannerModal: React.FC<MobileScannerModalProps> = ({
                     <span className="font-bold text-white text-xs">
                       {lastScannedResult.kit?.name ||
                         lastScannedResult.cableBox?.name ||
+                        lastScannedResult.consumable?.name ||
                         lastScannedResult.item?.name ||
                         (lastScannedResult.contractCode
                           ? `Contrato: ${lastScannedResult.contractCode}`
@@ -475,6 +479,8 @@ export const MobileScannerModal: React.FC<MobileScannerModalProps> = ({
                           ? 'QR Conjunto'
                           : lastScannedResult.cableBox
                           ? 'Caja Cables'
+                          : lastScannedResult.consumable
+                          ? 'Consumible'
                           : 'En Almacén'}
                       </span>
                     ) : (
@@ -491,6 +497,10 @@ export const MobileScannerModal: React.FC<MobileScannerModalProps> = ({
                     ) : lastScannedResult.cableBox ? (
                       <span>
                         Cables útiles: <strong className="text-cyan-400">{lastScannedResult.cableBox.currentQuantity}/{lastScannedResult.cableBox.initialQuantity}</strong> • {lastScannedResult.cableBox.cableType}
+                      </span>
+                    ) : lastScannedResult.consumable ? (
+                      <span>
+                        Quedan <strong className={lastScannedResult.consumable.currentQuantity <= lastScannedResult.consumable.minStock ? 'text-amber-400' : 'text-emerald-400'}>{lastScannedResult.consumable.currentQuantity} {lastScannedResult.consumable.unit}</strong> • {lastScannedResult.consumable.currentQuantity <= lastScannedResult.consumable.minStock ? 'HAY QUE COMPRAR' : 'Stock OK'}
                       </span>
                     ) : lastScannedResult.unit ? (
                       <span>N/S: <strong className="text-amber-400">{lastScannedResult.unit.serialNumber}</strong> • Ubicación: {lastScannedResult.unit.locationName}</span>

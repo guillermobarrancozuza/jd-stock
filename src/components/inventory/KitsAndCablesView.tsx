@@ -16,12 +16,17 @@ import {
   Save,
   Package,
   Search,
+  Droplets,
+  ShoppingCart,
 } from 'lucide-react';
 import {
   EquipmentKit,
   KitComponent,
   CableBox,
+  ConsumableItem,
   CONTRACT_SECTIONS,
+  CONSUMABLE_CATEGORIES,
+  CONSUMABLE_UNITS,
 } from '../../types/inventory.ts';
 import { useInventory } from '../../context/InventoryContext.tsx';
 import { useAuth } from '../../context/AuthContext.tsx';
@@ -31,22 +36,29 @@ export const KitsAndCablesView: React.FC = () => {
   const {
     items,
     locations,
+    suppliers,
     equipmentKits,
     cableBoxes,
+    consumables,
     saveEquipmentKit,
     deleteEquipmentKit,
     saveCableBox,
     deleteCableBox,
     adjustCableBoxQuantity,
+    saveConsumable,
+    deleteConsumable,
+    adjustConsumableQuantity,
   } = useInventory();
   const { canManageInventory } = useAuth();
 
-  const [activeTab, setActiveTab] = useState<'kits' | 'cables'>('kits');
+  const [activeTab, setActiveTab] = useState<'kits' | 'cables' | 'consumables'>('kits');
   const [search, setSearch] = useState('');
+  const [onlyToBuy, setOnlyToBuy] = useState(false);
 
   // Sticker Modal State
   const [qrKit, setQrKit] = useState<EquipmentKit | null>(null);
   const [qrBox, setQrBox] = useState<CableBox | null>(null);
+  const [qrConsumable, setQrConsumable] = useState<ConsumableItem | null>(null);
 
   // Kit Form Modal State
   const [showKitModal, setShowKitModal] = useState(false);
@@ -81,9 +93,31 @@ export const KitsAndCablesView: React.FC = () => {
   const [adjustReason, setAdjustReason] = useState('');
   const [adjustEvent, setAdjustEvent] = useState('');
 
+  // Consumable Form Modal State
+  const [showConsumableModal, setShowConsumableModal] = useState(false);
+  const [editingConsumable, setEditingConsumable] = useState<ConsumableItem | null>(null);
+  const [consName, setConsName] = useState('');
+  const [consCode, setConsCode] = useState('');
+  const [consCategory, setConsCategory] = useState<string>('Humo / Efectos');
+  const [consUnit, setConsUnit] = useState<string>('Garrafas 5L');
+  const [consCurrentQty, setConsCurrentQty] = useState<number>(3);
+  const [consMinStock, setConsMinStock] = useState<number>(2);
+  const [consOrderQty, setConsOrderQty] = useState<number>(4);
+  const [consSupplier, setConsSupplier] = useState('');
+  const [consLocation, setConsLocation] = useState('Nave Central');
+  const [consNotes, setConsNotes] = useState('');
+
+  // Consumable Custom Adjustment Modal State
+  const [adjustConsumable, setAdjustConsumable] = useState<ConsumableItem | null>(null);
+  const [consAdjustType, setConsAdjustType] = useState<'consumed' | 'restocked'>('consumed');
+  const [consAdjustAmount, setConsAdjustAmount] = useState<number>(1);
+  const [consAdjustEvent, setConsAdjustEvent] = useState('');
+  const [consAdjustNotes, setConsAdjustNotes] = useState('');
+
   // Delete inline confirmation
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [expandedHistoryBoxId, setExpandedHistoryBoxId] = useState<string | null>(null);
+  const [expandedHistoryConsId, setExpandedHistoryConsId] = useState<string | null>(null);
 
   const q = search.toLowerCase().trim();
 
@@ -106,6 +140,28 @@ export const KitsAndCablesView: React.FC = () => {
       b.cableType.toLowerCase().includes(q) ||
       (b.cableLength && b.cableLength.toLowerCase().includes(q))
   );
+
+  const consumablesToBuyCount = consumables.filter((c) => c.currentQuantity <= c.minStock).length;
+
+  const filteredConsumables = consumables
+    .filter((c) => (!onlyToBuy ? true : c.currentQuantity <= c.minStock))
+    .filter(
+      (c) =>
+        !q ||
+        c.name.toLowerCase().includes(q) ||
+        c.code.toLowerCase().includes(q) ||
+        c.qrCode.toLowerCase().includes(q) ||
+        c.category.toLowerCase().includes(q) ||
+        (c.supplier && c.supplier.toLowerCase().includes(q)) ||
+        c.locationName.toLowerCase().includes(q)
+    )
+    .sort((a, b) => {
+      // Surface items that need buying first
+      const aBuy = a.currentQuantity <= a.minStock ? 0 : 1;
+      const bBuy = b.currentQuantity <= b.minStock ? 0 : 1;
+      if (aBuy !== bBuy) return aBuy - bBuy;
+      return a.currentQuantity - b.currentQuantity;
+    });
 
   // Open Create/Edit Kit
   const openKitForm = (kit?: EquipmentKit) => {
@@ -250,6 +306,75 @@ export const KitsAndCablesView: React.FC = () => {
     setAdjustEvent('');
   };
 
+  // Open Create/Edit Consumable
+  const openConsumableForm = (cons?: ConsumableItem) => {
+    if (cons) {
+      setEditingConsumable(cons);
+      setConsName(cons.name);
+      setConsCode(cons.code);
+      setConsCategory(cons.category);
+      setConsUnit(cons.unit);
+      setConsCurrentQty(cons.currentQuantity);
+      setConsMinStock(cons.minStock);
+      setConsOrderQty(cons.recommendedOrderQty || Math.max(2, cons.minStock * 2));
+      setConsSupplier(cons.supplier || '');
+      setConsLocation(cons.locationName);
+      setConsNotes(cons.notes || '');
+    } else {
+      setEditingConsumable(null);
+      setConsName('');
+      setConsCode('');
+      setConsCategory('Humo / Efectos');
+      setConsUnit('Garrafas 5L');
+      setConsCurrentQty(3);
+      setConsMinStock(2);
+      setConsOrderQty(4);
+      setConsSupplier(suppliers[0]?.name || '');
+      setConsLocation(locations[0] ? `${locations[0].warehouse} - ${locations[0].zone}` : 'Nave Central');
+      setConsNotes('');
+    }
+    setShowConsumableModal(true);
+  };
+
+  const handleSaveConsumable = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!consName.trim()) return;
+    await saveConsumable({
+      id: editingConsumable?.id,
+      code: consCode.trim() || undefined,
+      qrCode: editingConsumable?.qrCode,
+      name: consName.trim(),
+      category: consCategory,
+      unit: consUnit,
+      currentQuantity: Math.max(0, Number(consCurrentQty) || 0),
+      minStock: Math.max(0, Number(consMinStock) || 0),
+      recommendedOrderQty: Math.max(1, Number(consOrderQty) || 1),
+      supplier: consSupplier.trim(),
+      locationName: consLocation.trim() || 'Nave Central',
+      notes: consNotes.trim(),
+      adjustments: editingConsumable?.adjustments || [],
+      createdAt: editingConsumable?.createdAt,
+    });
+    setShowConsumableModal(false);
+    setActiveTab('consumables');
+  };
+
+  const handleConsumableAdjustSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!adjustConsumable) return;
+    await adjustConsumableQuantity(
+      adjustConsumable.id,
+      consAdjustType,
+      Math.max(1, consAdjustAmount),
+      consAdjustNotes.trim() || undefined,
+      consAdjustEvent.trim() || undefined
+    );
+    setAdjustConsumable(null);
+    setConsAdjustAmount(1);
+    setConsAdjustEvent('');
+    setConsAdjustNotes('');
+  };
+
   const cableCatalogItems = items.filter(
     (i) =>
       i.group === 'CABLEADO' ||
@@ -266,10 +391,10 @@ export const KitsAndCablesView: React.FC = () => {
         <div>
           <h1 className="text-xl sm:text-2xl font-bold text-white flex items-center gap-2">
             <Boxes className="w-6 h-6 text-amber-400" />
-            <span>QR Conjuntos (Carros / Packs) y Cajas de Cables</span>
+            <span>QR Conjuntos, Cables y Consumibles</span>
           </h1>
           <p className="text-xs sm:text-sm text-zinc-400 mt-0.5">
-            Agrupa equipos en un solo QR (ej. Carro de Sonido) y controla cajas de cables descontando rotos o perdidos desde el QR.
+            Agrupa equipos en un solo QR, descuenta cables rotos/perdidos y controla consumibles (líquido de humo, cintas, pilas) con aviso automático de compra.
           </p>
         </div>
 
@@ -282,7 +407,7 @@ export const KitsAndCablesView: React.FC = () => {
                 className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-black text-xs font-bold shadow-lg shadow-amber-500/20 transition cursor-pointer"
               >
                 <Plus className="w-4 h-4" />
-                <span>Nuevo QR Conjunto / Carro</span>
+                <span>Nuevo QR Conjunto</span>
               </button>
               <button
                 type="button"
@@ -290,7 +415,15 @@ export const KitsAndCablesView: React.FC = () => {
                 className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-500/40 text-xs font-bold transition cursor-pointer"
               >
                 <Plus className="w-4 h-4" />
-                <span>Nueva Caja de Cables QR</span>
+                <span>Nueva Caja Cables</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => openConsumableForm()}
+                className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 text-xs font-bold transition cursor-pointer"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Nuevo Consumible QR</span>
               </button>
             </>
           )}
@@ -298,24 +431,24 @@ export const KitsAndCablesView: React.FC = () => {
       </div>
 
       {/* Tabs & Search */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div className="flex items-center gap-2 bg-[#161b22] p-1 rounded-xl border border-[#30363d] w-fit">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-1.5 bg-[#161b22] p-1 rounded-xl border border-[#30363d] w-fit">
           <button
             type="button"
             onClick={() => setActiveTab('kits')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${
               activeTab === 'kits'
                 ? 'bg-amber-500 text-black shadow'
                 : 'text-zinc-300 hover:text-white'
             }`}
           >
             <Boxes className="w-4 h-4" />
-            <span>QR Conjuntos / Carros ({equipmentKits.length})</span>
+            <span>QR Conjuntos ({equipmentKits.length})</span>
           </button>
           <button
             type="button"
             onClick={() => setActiveTab('cables')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${
               activeTab === 'cables'
                 ? 'bg-cyan-500 text-black shadow'
                 : 'text-zinc-300 hover:text-white'
@@ -324,9 +457,32 @@ export const KitsAndCablesView: React.FC = () => {
             <Cable className="w-4 h-4" />
             <span>Cajas de Cables ({cableBoxes.length})</span>
           </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('consumables')}
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${
+              activeTab === 'consumables'
+                ? 'bg-emerald-500 text-black shadow'
+                : 'text-zinc-300 hover:text-white'
+            }`}
+          >
+            <Droplets className="w-4 h-4" />
+            <span>Consumibles ({consumables.length})</span>
+            {consumablesToBuyCount > 0 && (
+              <span
+                className={`px-1.5 py-0.5 rounded font-mono text-[10px] font-black ${
+                  activeTab === 'consumables'
+                    ? 'bg-black text-amber-300'
+                    : 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                }`}
+              >
+                {consumablesToBuyCount} comprar
+              </span>
+            )}
+          </button>
         </div>
 
-        <div className="relative w-full sm:w-80">
+        <div className="relative w-full md:w-80">
           <Search className="w-4 h-4 text-zinc-400 absolute left-3 top-1/2 -translate-y-1/2" />
           <input
             type="text"
@@ -335,7 +491,9 @@ export const KitsAndCablesView: React.FC = () => {
             placeholder={
               activeTab === 'kits'
                 ? 'Buscar carro, QR, componente o apartado...'
-                : 'Buscar caja, tipo XLR/DMX, metros o QR...'
+                : activeTab === 'cables'
+                ? 'Buscar caja, tipo XLR/DMX, metros o QR...'
+                : 'Buscar líquido humo, cinta, pilas, proveedor o QR...'
             }
             className="w-full bg-[#161b22] border border-[#30363d] rounded-lg pl-9 pr-3 py-2 text-xs text-zinc-100 focus:outline-none focus:border-amber-500"
           />
@@ -764,6 +922,358 @@ export const KitsAndCablesView: React.FC = () => {
               );
             })
           )}
+        </div>
+      )}
+
+      {/* TAB 3: CONSUMABLES (LÍQUIDO HUMO, CINTAS, PILAS CON AVISO AUTOMÁTICO DE COMPRA) */}
+      {activeTab === 'consumables' && (
+        <div className="space-y-4">
+          {/* Purchase Verdict Summary Strip */}
+          <div
+            className={`p-3.5 rounded-2xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+              consumablesToBuyCount > 0
+                ? 'bg-amber-500/10 border-amber-500/40'
+                : 'bg-emerald-500/10 border-emerald-500/35'
+            }`}
+          >
+            <div className="flex items-center gap-3">
+              <div
+                className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 border ${
+                  consumablesToBuyCount > 0
+                    ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                    : 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                }`}
+              >
+                {consumablesToBuyCount > 0 ? (
+                  <ShoppingCart className="w-5 h-5" />
+                ) : (
+                  <CheckCircle className="w-5 h-5" />
+                )}
+              </div>
+              <div>
+                <div className="text-sm font-bold text-white">
+                  {consumablesToBuyCount > 0
+                    ? `Hay que comprar ${consumablesToBuyCount} consumible${consumablesToBuyCount > 1 ? 's' : ''}`
+                    : 'Todos los consumibles tienen stock suficiente'}
+                </div>
+                <p className="text-xs text-zinc-300">
+                  {consumablesToBuyCount > 0
+                    ? 'Al descontar stock (-1 Gastado), el sistema compara con el mínimo y avisa a todo el equipo al instante.'
+                    : 'No hace falta comprar nada ahora mismo. Cuando algún consumible llegue a su mínimo, avisará aquí en naranja/rojo.'}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => setOnlyToBuy((prev) => !prev)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition cursor-pointer ${
+                  onlyToBuy
+                    ? 'bg-amber-500 text-black border-amber-400'
+                    : 'bg-[#0d1117] text-zinc-200 border-[#30363d] hover:border-amber-500/50'
+                }`}
+              >
+                {onlyToBuy
+                  ? `Mostrando solo a comprar (${consumablesToBuyCount})`
+                  : `Solo los que hay que comprar (${consumablesToBuyCount})`}
+              </button>
+            </div>
+          </div>
+
+          {/* Consumables Grid */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {filteredConsumables.length === 0 ? (
+              <div className="col-span-full text-center py-14 bg-[#161b22] border border-[#30363d] rounded-xl text-zinc-400">
+                <Droplets className="w-10 h-10 text-zinc-600 mx-auto mb-2" />
+                <p className="text-sm font-semibold text-white">
+                  {onlyToBuy
+                    ? 'No hay consumibles pendientes de compra'
+                    : 'No hay consumibles registrados'}
+                </p>
+                <p className="text-xs text-zinc-500 mt-1">
+                  {onlyToBuy
+                    ? 'Todos los consumibles están por encima de su stock mínimo.'
+                    : 'Añade líquido de máquina de humo, hazer, cinta gaffer o pilas para controlar cuándo comprar.'}
+                </p>
+              </div>
+            ) : (
+              filteredConsumables.map((cons) => {
+                const isOut = cons.currentQuantity === 0;
+                const needsBuy = cons.currentQuantity <= cons.minStock;
+                const targetLevel = Math.max(cons.minStock * 2, cons.minStock + 2, 1);
+                const pct = Math.min(100, Math.round((cons.currentQuantity / targetLevel) * 100));
+                const showHistory = expandedHistoryConsId === cons.id;
+                const orderSuggestion = cons.recommendedOrderQty || Math.max(2, cons.minStock * 2);
+
+                return (
+                  <div
+                    key={cons.id}
+                    className={`bg-[#161b22] border rounded-2xl p-4 flex flex-col justify-between gap-4 transition ${
+                      isOut
+                        ? 'border-rose-500/70 shadow-lg shadow-rose-500/10'
+                        : needsBuy
+                        ? 'border-amber-500/60 shadow-lg shadow-amber-500/10'
+                        : 'border-[#30363d] hover:border-emerald-500/40'
+                    }`}
+                  >
+                    <div className="space-y-3">
+                      {/* Top Header */}
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="flex flex-wrap items-center gap-1.5 mb-1">
+                            <span className="font-mono text-[11px] font-bold px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                              {cons.qrCode}
+                            </span>
+                            <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-zinc-800 text-zinc-300">
+                              {cons.category}
+                            </span>
+                          </div>
+                          <h3 className="text-base font-bold text-white">{cons.name}</h3>
+                          {cons.notes && (
+                            <p className="text-[11px] text-zinc-400 mt-0.5">{cons.notes}</p>
+                          )}
+                        </div>
+
+                        <div className="text-right shrink-0">
+                          <span className="text-[10px] text-zinc-500 block">Disponibles</span>
+                          <span className="font-mono font-black text-2xl leading-none">
+                            <span
+                              className={
+                                isOut
+                                  ? 'text-rose-400'
+                                  : needsBuy
+                                  ? 'text-amber-400'
+                                  : 'text-emerald-400'
+                              }
+                            >
+                              {cons.currentQuantity}
+                            </span>
+                          </span>
+                          <span className="text-[10px] text-zinc-400 block mt-0.5">
+                            {cons.unit} · Mín. {cons.minStock}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Clear Buy / No-Buy Verdict Banner */}
+                      <div
+                        className={`p-3 rounded-xl border flex items-center justify-between gap-3 ${
+                          isOut
+                            ? 'bg-rose-500/15 border-rose-500/50 text-rose-200'
+                            : needsBuy
+                            ? 'bg-amber-500/15 border-amber-500/50 text-amber-200'
+                            : 'bg-emerald-500/12 border-emerald-500/35 text-emerald-200'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          {needsBuy ? (
+                            <ShoppingCart
+                              className={`w-4 h-4 shrink-0 ${isOut ? 'text-rose-400' : 'text-amber-400'}`}
+                            />
+                          ) : (
+                            <CheckCircle className="w-4 h-4 shrink-0 text-emerald-400" />
+                          )}
+                          <div className="min-w-0">
+                            <div className="text-xs font-black uppercase tracking-wide">
+                              {isOut
+                                ? 'SIN STOCK — HAY QUE COMPRAR YA'
+                                : needsBuy
+                                ? 'HAY QUE COMPRAR'
+                                : 'NO HACE FALTA COMPRAR'}
+                            </div>
+                            <div className="text-[11px] opacity-90">
+                              {isOut
+                                ? `Agotado (0 ${cons.unit}). Pedir ${orderSuggestion} ${cons.unit}${
+                                    cons.supplier ? ` a ${cons.supplier}` : ''
+                                  }.`
+                                : needsBuy
+                                ? `Quedan ${cons.currentQuantity} ${cons.unit} (límite mínimo: ${cons.minStock}). Pedir ${orderSuggestion} ${cons.unit}.`
+                                : `Stock suficiente (${cons.currentQuantity} ${cons.unit}). Avisará cuando baje a ${cons.minStock}.`}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Stock Progress Bar vs Minimum Threshold */}
+                      <div className="space-y-1.5 bg-[#0d1117] p-3 rounded-xl border border-[#30363d]">
+                        <div className="flex items-center justify-between text-[10px] font-mono text-zinc-400">
+                          <span>
+                            Stock actual: <strong className="text-white">{cons.currentQuantity} {cons.unit}</strong>
+                          </span>
+                          <span>
+                            Aviso compra si ≤ <strong className="text-amber-300">{cons.minStock}</strong>
+                          </span>
+                        </div>
+                        <div className="w-full h-2.5 bg-zinc-800 rounded-full overflow-hidden">
+                          <div
+                            className={`h-full transition-all ${
+                              isOut
+                                ? 'bg-rose-500'
+                                : needsBuy
+                                ? 'bg-amber-500'
+                                : 'bg-emerald-500'
+                            }`}
+                            style={{ width: `${Math.max(isOut ? 4 : 8, pct)}%` }}
+                          />
+                        </div>
+                        {cons.supplier && (
+                          <div className="text-[10px] text-zinc-500 pt-0.5">
+                            Proveedor habitual: <span className="text-zinc-300">{cons.supplier}</span>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Direct 1-click Consume / Restock Controls (Available to ALL roles) */}
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <button
+                          type="button"
+                          disabled={cons.currentQuantity <= 0}
+                          onClick={() => adjustConsumableQuantity(cons.id, 'consumed', 1)}
+                          className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/40 text-xs font-bold transition cursor-pointer disabled:opacity-40"
+                        >
+                          <Minus className="w-3.5 h-3.5" />
+                          <span>-1 Gastado</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => adjustConsumableQuantity(cons.id, 'restocked', 1)}
+                          className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/40 text-xs font-bold transition cursor-pointer"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>+1 Comprado</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setAdjustConsumable(cons);
+                            setConsAdjustType('consumed');
+                            setConsAdjustAmount(1);
+                            setConsAdjustEvent('');
+                            setConsAdjustNotes('');
+                          }}
+                          className="px-2.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-[#30363d] text-[11px] font-semibold transition cursor-pointer"
+                        >
+                          Gastar / Reponer varios...
+                        </button>
+                      </div>
+
+                      {/* History Toggle */}
+                      {cons.adjustments && cons.adjustments.length > 0 && (
+                        <div>
+                          <button
+                            type="button"
+                            onClick={() => setExpandedHistoryConsId(showHistory ? null : cons.id)}
+                            className="text-[11px] text-emerald-400 hover:text-emerald-300 flex items-center gap-1 font-semibold cursor-pointer"
+                          >
+                            <History className="w-3.5 h-3.5" />
+                            <span>
+                              {showHistory ? 'Ocultar' : 'Ver'} historial de consumos y compras ({cons.adjustments.length})
+                            </span>
+                          </button>
+                          {showHistory && (
+                            <div className="mt-2 space-y-1 max-h-36 overflow-y-auto bg-[#0d1117] border border-[#30363d] rounded-lg p-2 text-[11px]">
+                              {cons.adjustments.map((adj) => (
+                                <div
+                                  key={adj.id}
+                                  className="flex items-center justify-between gap-2 py-1 border-b border-[#30363d] last:border-0"
+                                >
+                                  <div className="min-w-0">
+                                    <span
+                                      className={`font-bold mr-1.5 ${
+                                        adj.type === 'consumed' ? 'text-rose-400' : 'text-emerald-400'
+                                      }`}
+                                    >
+                                      {adj.type === 'consumed'
+                                        ? `-${adj.amount} Gastado`
+                                        : `+${adj.amount} Comprado`}
+                                    </span>
+                                    <span className="text-zinc-300">{adj.notes}</span>
+                                    <div className="text-[10px] text-zinc-500">
+                                      {new Date(adj.date).toLocaleString()} · {adj.userName}
+                                      {adj.eventName ? ` · Evento: ${adj.eventName}` : ''}
+                                    </div>
+                                  </div>
+                                  <span className="font-mono text-zinc-400 shrink-0">
+                                    {adj.previousQuantity}→{adj.newQuantity}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Footer Actions */}
+                    <div className="flex flex-wrap items-center justify-between gap-2 pt-3 border-t border-[#30363d]">
+                      <span className="flex items-center gap-1 text-[11px] text-zinc-400">
+                        <MapPin className="w-3.5 h-3.5 text-zinc-500" />
+                        {cons.locationName}
+                      </span>
+
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => setQrConsumable(cons)}
+                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 text-xs font-bold transition cursor-pointer"
+                        >
+                          <QrCode className="w-3.5 h-3.5" />
+                          <span>Pegatina QR</span>
+                        </button>
+
+                        {canManageInventory && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => openConsumableForm(cons)}
+                              className="p-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-emerald-300 transition cursor-pointer"
+                              title="Editar consumible"
+                            >
+                              <Edit className="w-3.5 h-3.5" />
+                            </button>
+
+                            {confirmDeleteId === cons.id ? (
+                              <div className="flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    deleteConsumable(cons.id);
+                                    setConfirmDeleteId(null);
+                                  }}
+                                  className="px-2 py-1 rounded bg-rose-600 hover:bg-rose-500 text-white text-[11px] font-bold cursor-pointer"
+                                >
+                                  Eliminar
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmDeleteId(null)}
+                                  className="px-2 py-1 rounded bg-zinc-800 text-zinc-300 text-[11px] cursor-pointer"
+                                >
+                                  No
+                                </button>
+                              </div>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => setConfirmDeleteId(cons.id)}
+                                className="p-1.5 rounded-lg bg-zinc-800 hover:bg-rose-950 text-zinc-400 hover:text-rose-400 transition cursor-pointer"
+                                title="Eliminar consumible"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
         </div>
       )}
 
@@ -1217,17 +1727,325 @@ export const KitsAndCablesView: React.FC = () => {
         </div>
       )}
 
-      {/* QR Sticker Modal for Kits & Cable Boxes */}
-      {(qrKit || qrBox) && (
+      {/* MODAL: CREATE / EDIT CONSUMABLE */}
+      {showConsumableModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-[#161b22] border border-[#30363d] rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden">
+            <div className="p-4 border-b border-[#30363d] flex items-center justify-between">
+              <h2 className="text-sm font-bold text-white flex items-center gap-2">
+                <Droplets className="w-4 h-4 text-emerald-400" />
+                {editingConsumable ? 'Editar Consumible QR' : 'Nuevo Consumible con QR y Aviso de Compra'}
+              </h2>
+              <button
+                type="button"
+                onClick={() => setShowConsumableModal(false)}
+                className="text-zinc-400 hover:text-white cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveConsumable} className="p-5 space-y-4 text-xs">
+              <div>
+                <label className="block text-zinc-300 font-semibold mb-1">Nombre del Consumible *</label>
+                <input
+                  type="text"
+                  required
+                  value={consName}
+                  onChange={(e) => setConsName(e.target.value)}
+                  placeholder="Ej. Líquido Máquina de Humo (Garrafa 5L)"
+                  className="w-full bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-2 text-white focus:outline-none focus:border-emerald-500"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-zinc-300 font-semibold mb-1">Categoría</label>
+                  <select
+                    value={consCategory}
+                    onChange={(e) => setConsCategory(e.target.value)}
+                    className="w-full bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-2 text-white focus:outline-none focus:border-emerald-500"
+                  >
+                    {CONSUMABLE_CATEGORIES.map((cat) => (
+                      <option key={cat} value={cat}>
+                        {cat}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-zinc-300 font-semibold mb-1">Unidad de Medida</label>
+                  <select
+                    value={consUnit}
+                    onChange={(e) => setConsUnit(e.target.value)}
+                    className="w-full bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-2 text-white focus:outline-none focus:border-emerald-500"
+                  >
+                    {CONSUMABLE_UNITS.map((u) => (
+                      <option key={u} value={u}>
+                        {u}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-zinc-300 font-semibold mb-1">Stock Actual *</label>
+                  <input
+                    type="number"
+                    min="0"
+                    required
+                    value={consCurrentQty}
+                    onChange={(e) => setConsCurrentQty(Math.max(0, Number(e.target.value) || 0))}
+                    className="w-full bg-[#0d1117] border border-emerald-500/40 rounded-lg px-3 py-2 text-emerald-300 font-mono font-bold focus:outline-none focus:border-emerald-400"
+                  />
+                </div>
+                <div>
+                  <label className="block text-zinc-300 font-semibold mb-1">Avisar Comprar si ≤ *</label>
+                  <input
+                    type="number"
+                    min="0"
+                    required
+                    value={consMinStock}
+                    onChange={(e) => setConsMinStock(Math.max(0, Number(e.target.value) || 0))}
+                    className="w-full bg-[#0d1117] border border-amber-500/40 rounded-lg px-3 py-2 text-amber-300 font-mono font-bold focus:outline-none focus:border-amber-400"
+                  />
+                </div>
+                <div>
+                  <label className="block text-zinc-300 font-semibold mb-1">Cantidad a Pedir</label>
+                  <input
+                    type="number"
+                    min="1"
+                    value={consOrderQty}
+                    onChange={(e) => setConsOrderQty(Math.max(1, Number(e.target.value) || 1))}
+                    className="w-full bg-[#0d1117] border border-cyan-500/40 rounded-lg px-3 py-2 text-cyan-300 font-mono font-bold focus:outline-none focus:border-cyan-400"
+                  />
+                </div>
+              </div>
+
+              {/* Live preview of buy alert logic */}
+              <div
+                className={`p-2.5 rounded-lg border text-[11px] font-semibold flex items-center gap-2 ${
+                  consCurrentQty <= consMinStock
+                    ? 'bg-amber-500/15 border-amber-500/40 text-amber-200'
+                    : 'bg-emerald-500/15 border-emerald-500/40 text-emerald-200'
+                }`}
+              >
+                {consCurrentQty <= consMinStock ? (
+                  <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                ) : (
+                  <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0" />
+                )}
+                <span>
+                  {consCurrentQty <= consMinStock
+                    ? `Estado inmediato: HAY QUE COMPRAR (tienes ${consCurrentQty} y el aviso está en ≤ ${consMinStock}).`
+                    : `Estado inmediato: NO HACE FALTA COMPRAR (avisará al bajar a ${consMinStock} ${consUnit}).`}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-zinc-300 font-semibold mb-1">Proveedor Habitual (opcional)</label>
+                  <input
+                    type="text"
+                    value={consSupplier}
+                    onChange={(e) => setConsSupplier(e.target.value)}
+                    placeholder="Ej. Thomann / Earpro"
+                    className="w-full bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-2 text-white focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-zinc-300 font-semibold mb-1">Ubicación</label>
+                  <input
+                    type="text"
+                    value={consLocation}
+                    onChange={(e) => setConsLocation(e.target.value)}
+                    className="w-full bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-2 text-white focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-zinc-300 font-semibold mb-1">Código Interno (opcional)</label>
+                  <input
+                    type="text"
+                    value={consCode}
+                    onChange={(e) => setConsCode(e.target.value)}
+                    placeholder="Ej. CONS-HUMO-01"
+                    className="w-full bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-2 text-white font-mono uppercase focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-zinc-300 font-semibold mb-1">Notas</label>
+                  <input
+                    type="text"
+                    value={consNotes}
+                    onChange={(e) => setConsNotes(e.target.value)}
+                    placeholder="Ej. Base agua densidad media"
+                    className="w-full bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-2 text-white focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+              </div>
+
+              <div className="pt-3 border-t border-[#30363d] flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowConsumableModal(false)}
+                  className="px-4 py-2 rounded-lg border border-[#30363d] text-zinc-300 hover:bg-zinc-800 cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-black font-bold cursor-pointer"
+                >
+                  <Save className="w-4 h-4" />
+                  <span>Guardar Consumible QR</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: CUSTOM CONSUMABLE CONSUME / RESTOCK */}
+      {adjustConsumable && (
+        <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
+          <div className="bg-[#161b22] border border-[#30363d] rounded-2xl w-full max-w-md shadow-2xl overflow-hidden">
+            <div className="p-4 border-b border-[#30363d] flex items-center justify-between">
+              <div>
+                <h2 className="text-sm font-bold text-white">Gastar / Reponer Consumible</h2>
+                <p className="text-[11px] text-emerald-300 font-mono">
+                  {adjustConsumable.name} ({adjustConsumable.currentQuantity} {adjustConsumable.unit} · Mín. {adjustConsumable.minStock})
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAdjustConsumable(null)}
+                className="text-zinc-400 hover:text-white cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleConsumableAdjustSubmit} className="p-5 space-y-4 text-xs">
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setConsAdjustType('consumed')}
+                  className={`py-2 rounded-lg font-bold border cursor-pointer ${
+                    consAdjustType === 'consumed'
+                      ? 'bg-rose-500/20 text-rose-300 border-rose-500'
+                      : 'bg-[#0d1117] text-zinc-400 border-[#30363d]'
+                  }`}
+                >
+                  Gastado (-)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConsAdjustType('restocked')}
+                  className={`py-2 rounded-lg font-bold border cursor-pointer ${
+                    consAdjustType === 'restocked'
+                      ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500'
+                      : 'bg-[#0d1117] text-zinc-400 border-[#30363d]'
+                  }`}
+                >
+                  Comprado / Repuesto (+)
+                </button>
+              </div>
+
+              <div>
+                <label className="block text-zinc-300 font-semibold mb-1">
+                  Cantidad ({adjustConsumable.unit})
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  max={consAdjustType === 'restocked' ? 500 : Math.max(1, adjustConsumable.currentQuantity)}
+                  value={consAdjustAmount}
+                  onChange={(e) => setConsAdjustAmount(Math.max(1, Number(e.target.value) || 1))}
+                  className="w-full bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-2 text-white font-mono font-bold text-sm"
+                />
+              </div>
+
+              {/* Live preview of resulting stock & buy alert */}
+              {(() => {
+                const resultingQty =
+                  consAdjustType === 'restocked'
+                    ? adjustConsumable.currentQuantity + consAdjustAmount
+                    : Math.max(0, adjustConsumable.currentQuantity - consAdjustAmount);
+                const willNeedBuy = resultingQty <= adjustConsumable.minStock;
+                return (
+                  <div
+                    className={`p-2.5 rounded-lg border text-[11px] font-bold ${
+                      willNeedBuy
+                        ? 'bg-amber-500/15 border-amber-500/40 text-amber-200'
+                        : 'bg-emerald-500/15 border-emerald-500/40 text-emerald-200'
+                    }`}
+                  >
+                    Quedarán {resultingQty} {adjustConsumable.unit} →{' '}
+                    {willNeedBuy ? '⚠️ HAY QUE COMPRAR' : '✓ NO HACE FALTA COMPRAR'}
+                  </div>
+                );
+              })()}
+
+              <div>
+                <label className="block text-zinc-300 font-semibold mb-1">Evento / Bolo (opcional)</label>
+                <input
+                  type="text"
+                  value={consAdjustEvent}
+                  onChange={(e) => setConsAdjustEvent(e.target.value)}
+                  placeholder="Ej. Festival Sonorama / Boda..."
+                  className="w-full bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-2 text-white"
+                />
+              </div>
+
+              <div>
+                <label className="block text-zinc-300 font-semibold mb-1">Notas (opcional)</label>
+                <input
+                  type="text"
+                  value={consAdjustNotes}
+                  onChange={(e) => setConsAdjustNotes(e.target.value)}
+                  placeholder="Ej. Rellenado de 2 máquinas de humo"
+                  className="w-full bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-2 text-white"
+                />
+              </div>
+
+              <div className="pt-2 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setAdjustConsumable(null)}
+                  className="px-4 py-2 rounded-lg border border-[#30363d] text-zinc-300 cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-black font-bold cursor-pointer"
+                >
+                  Guardar Movimiento
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* QR Sticker Modal for Kits, Cable Boxes & Consumables */}
+      {(qrKit || qrBox || qrConsumable) && (
         <QrBarcodeModal
-          isOpen={Boolean(qrKit || qrBox)}
+          isOpen={Boolean(qrKit || qrBox || qrConsumable)}
           onClose={() => {
             setQrKit(null);
             setQrBox(null);
+            setQrConsumable(null);
           }}
           kit={qrKit}
           cableBox={qrBox}
-          defaultSize="flycase_17x7"
+          consumable={qrConsumable}
+          defaultSize={qrConsumable ? 'truss_6x6' : 'flycase_17x7'}
         />
       )}
     </div>

@@ -53,6 +53,7 @@ function MainApp() {
     itemUnits,
     equipmentKits,
     cableBoxes,
+    consumables,
     contracts,
   } = useInventory();
 
@@ -65,12 +66,13 @@ function MainApp() {
     itemUnits,
     equipmentKits,
     cableBoxes,
+    consumables,
     contracts,
   });
 
   useEffect(() => {
-    inventorySnapshotRef.current = { items, itemUnits, equipmentKits, cableBoxes, contracts };
-  }, [items, itemUnits, equipmentKits, cableBoxes, contracts]);
+    inventorySnapshotRef.current = { items, itemUnits, equipmentKits, cableBoxes, consumables, contracts };
+  }, [items, itemUnits, equipmentKits, cableBoxes, consumables, contracts]);
 
   // Real-time Phone-to-PC QR Scanner Bridge Listener (linked automatically by logged-in user UID)
   useEffect(() => {
@@ -128,7 +130,8 @@ function MainApp() {
               inv.items,
               inv.equipmentKits,
               inv.cableBoxes,
-              inv.contracts
+              inv.contracts,
+              inv.consumables
             );
             setScannedQrResult(match);
           }
@@ -171,7 +174,7 @@ function MainApp() {
     const params = new URLSearchParams(window.location.search);
     const qrParam = params.get('qr') || params.get('code');
     if (!qrParam) return;
-    if (items.length === 0 && equipmentKits.length === 0 && cableBoxes.length === 0) return;
+    if (items.length === 0 && equipmentKits.length === 0 && cableBoxes.length === 0 && consumables.length === 0) return;
 
     urlQrHandledRef.current = true;
     const match = findUnitOrItemByCode(
@@ -180,7 +183,8 @@ function MainApp() {
       items,
       equipmentKits,
       cableBoxes,
-      contracts
+      contracts,
+      consumables
     );
     setScannedQrResult(match);
 
@@ -191,7 +195,7 @@ function MainApp() {
     } catch {
       // Ignore history errors in restricted iframe contexts
     }
-  }, [items, itemUnits, equipmentKits, cableBoxes, contracts]);
+  }, [items, itemUnits, equipmentKits, cableBoxes, consumables, contracts]);
 
   // Global USB / Bluetooth QR & Barcode scanner listener -> pops up directly on screen
   useEffect(() => {
@@ -226,7 +230,8 @@ function MainApp() {
             items,
             equipmentKits,
             cableBoxes,
-            contracts
+            contracts,
+            consumables
           );
           setScannedQrResult(match);
         } else {
@@ -242,7 +247,7 @@ function MainApp() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [items, itemUnits, equipmentKits, cableBoxes, contracts]);
+  }, [items, itemUnits, equipmentKits, cableBoxes, consumables, contracts]);
 
   const handleOpenQuickAction = (
     action: 'dispatch' | 'return' | 'incident' | 'item' | 'purchase'

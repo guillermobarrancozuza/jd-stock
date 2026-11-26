@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { X, Printer, Download, Copy, Check, QrCode, Ruler, Layers } from 'lucide-react';
 import QRCode from 'qrcode';
-import { Item, ItemUnit, EquipmentKit, CableBox, QrStickerSize } from '../../types/inventory.ts';
+import { Item, ItemUnit, EquipmentKit, CableBox, ConsumableItem, QrStickerSize } from '../../types/inventory.ts';
 
 interface QrBarcodeModalProps {
   isOpen: boolean;
@@ -10,6 +10,7 @@ interface QrBarcodeModalProps {
   unit?: ItemUnit | null;
   kit?: EquipmentKit | null;
   cableBox?: CableBox | null;
+  consumable?: ConsumableItem | null;
   defaultSize?: QrStickerSize;
 }
 
@@ -53,9 +54,11 @@ function inferDefaultSize(
   item?: Item | null,
   unit?: ItemUnit | null,
   kit?: EquipmentKit | null,
-  cableBox?: CableBox | null
+  cableBox?: CableBox | null,
+  consumable?: ConsumableItem | null
 ): QrStickerSize {
   if (kit || cableBox) return 'flycase_17x7';
+  if (consumable) return 'truss_6x6';
   const hay = `${item?.group || ''} ${item?.category || ''} ${item?.name || ''} ${unit?.itemName || ''}`.toLowerCase();
   if (hay.includes('micro') || hay.includes('sm58') || hay.includes('sm57') || hay.includes('petaca')) {
     return 'micro_20x20';
@@ -82,27 +85,30 @@ export const QrBarcodeModal: React.FC<QrBarcodeModalProps> = ({
   unit,
   kit,
   cableBox,
+  consumable,
   defaultSize,
 }) => {
   const [qrDataUrl, setQrDataUrl] = useState<string>('');
   const [copied, setCopied] = useState<string | null>(null);
   const [selectedSize, setSelectedSize] = useState<QrStickerSize>(() =>
-    defaultSize || inferDefaultSize(item, unit, kit, cableBox)
+    defaultSize || inferDefaultSize(item, unit, kit, cableBox, consumable)
   );
   const [printMode, setPrintMode] = useState<'exact' | 'a4_sheet'>('exact');
   const [copies, setCopies] = useState<number>(1);
 
   useEffect(() => {
     if (isOpen) {
-      setSelectedSize(defaultSize || inferDefaultSize(item, unit, kit, cableBox));
+      setSelectedSize(defaultSize || inferDefaultSize(item, unit, kit, cableBox, consumable));
       setCopies(1);
     }
-  }, [isOpen, defaultSize, item, unit, kit, cableBox]);
+  }, [isOpen, defaultSize, item, unit, kit, cableBox, consumable]);
 
   const title = kit
     ? kit.name
     : cableBox
     ? cableBox.name
+    : consumable
+    ? consumable.name
     : unit
     ? `${unit.itemName} (N/S)`
     : item?.name || 'Equipo AV';
@@ -111,6 +117,8 @@ export const QrBarcodeModal: React.FC<QrBarcodeModalProps> = ({
     ? kit.code
     : cableBox
     ? cableBox.code
+    : consumable
+    ? consumable.code
     : unit
     ? unit.serialNumber
     : item?.code || 'AV-REF';
@@ -119,12 +127,16 @@ export const QrBarcodeModal: React.FC<QrBarcodeModalProps> = ({
     ? `QR CONJUNTO · ${kit.section.toUpperCase()}`
     : cableBox
     ? `CAJA CABLES · ${cableBox.currentQuantity}/${cableBox.initialQuantity} UDS`
+    : consumable
+    ? `CONSUMIBLE · MÍN ${consumable.minStock} ${consumable.unit.toUpperCase()}`
     : item?.group || 'AUDIOVISUAL';
 
   const qrPayload = kit
     ? kit.qrCode || `QR-${kit.code}`
     : cableBox
     ? cableBox.qrCode || `QR-${cableBox.code}`
+    : consumable
+    ? consumable.qrCode || `QR-${consumable.code}`
     : unit
     ? unit.qrCode || `QR-${unit.serialNumber}`
     : item?.qrCode || `QR-${item?.code}`;
@@ -133,6 +145,8 @@ export const QrBarcodeModal: React.FC<QrBarcodeModalProps> = ({
     ? kit.locationName
     : cableBox
     ? cableBox.locationName
+    : consumable
+    ? consumable.locationName
     : unit
     ? unit.locationName
     : item?.defaultLocationName || 'Almacén Central';
@@ -141,6 +155,8 @@ export const QrBarcodeModal: React.FC<QrBarcodeModalProps> = ({
     ? kit.components.map((c) => `${c.quantity}× ${c.name}`).join(' · ')
     : cableBox
     ? `${cableBox.cableType}${cableBox.cableLength ? ` (${cableBox.cableLength})` : ''} — Contiene ${cableBox.currentQuantity} uds útiles`
+    : consumable
+    ? `${consumable.category} — Stock mínimo de aviso compra: ${consumable.minStock} ${consumable.unit}`
     : item
     ? `${item.brand} ${item.model}`.trim()
     : '';

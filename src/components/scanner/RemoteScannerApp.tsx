@@ -39,7 +39,7 @@ interface SentScanFeedback {
 
 export const RemoteScannerApp: React.FC<RemoteScannerAppProps> = ({ onExitToFullApp }) => {
   const { currentUser, userProfile, logout } = useAuth();
-  const { items, itemUnits, equipmentKits, cableBoxes, contracts } = useInventory();
+  const { items, itemUnits, equipmentKits, cableBoxes, consumables, contracts } = useInventory();
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -65,15 +65,15 @@ export const RemoteScannerApp: React.FC<RemoteScannerAppProps> = ({ onExitToFull
   const lastCodeRef = useRef<string | null>(null);
   const lastTimeRef = useRef<number>(0);
   const soundEnabledRef = useRef(soundEnabled);
-  const inventoryRef = useRef({ items, itemUnits, equipmentKits, cableBoxes, contracts });
+  const inventoryRef = useRef({ items, itemUnits, equipmentKits, cableBoxes, consumables, contracts });
 
   useEffect(() => {
     soundEnabledRef.current = soundEnabled;
   }, [soundEnabled]);
 
   useEffect(() => {
-    inventoryRef.current = { items, itemUnits, equipmentKits, cableBoxes, contracts };
-  }, [items, itemUnits, equipmentKits, cableBoxes, contracts]);
+    inventoryRef.current = { items, itemUnits, equipmentKits, cableBoxes, consumables, contracts };
+  }, [items, itemUnits, equipmentKits, cableBoxes, consumables, contracts]);
 
   // Keep live presence heartbeat with user's open PC session
   useEffect(() => {
@@ -160,12 +160,14 @@ export const RemoteScannerApp: React.FC<RemoteScannerAppProps> = ({ onExitToFull
       inv.items,
       inv.equipmentKits,
       inv.cableBoxes,
-      inv.contracts
+      inv.contracts,
+      inv.consumables
     );
 
     const label =
       match.kit?.name ||
       match.cableBox?.name ||
+      match.consumable?.name ||
       match.item?.name ||
       (match.contract ? `Contrato ${match.contract.code}` : clean);
 
@@ -173,6 +175,10 @@ export const RemoteScannerApp: React.FC<RemoteScannerAppProps> = ({ onExitToFull
       ? `QR Conjunto · ${match.kit.components.length} componentes`
       : match.cableBox
       ? `Caja Cables · ${match.cableBox.currentQuantity}/${match.cableBox.initialQuantity} útiles`
+      : match.consumable
+      ? `Consumible · ${match.consumable.currentQuantity} ${match.consumable.unit} · ${
+          match.consumable.currentQuantity <= match.consumable.minStock ? 'HAY QUE COMPRAR' : 'Stock OK'
+        }`
       : match.unit
       ? `N/S ${match.unit.serialNumber} · ${match.unit.locationName}`
       : match.item

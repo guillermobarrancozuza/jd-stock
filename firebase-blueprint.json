@@ -300,6 +300,28 @@
       },
       "required": ["id", "code", "name", "qrCode", "initialQuantity", "currentQuantity"]
     },
+    "ConsumableItem": {
+      "title": "ConsumableItem",
+      "description": "Consumible de almacén con QR y aviso automático de compra cuando baja al mínimo (ej. líquido de humo, cinta gaffer, pilas)",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "code": { "type": "string" },
+        "name": { "type": "string" },
+        "category": { "type": "string" },
+        "unit": { "type": "string" },
+        "qrCode": { "type": "string" },
+        "currentQuantity": { "type": "number" },
+        "minStock": { "type": "number" },
+        "recommendedOrderQty": { "type": "number" },
+        "supplier": { "type": "string" },
+        "locationName": { "type": "string" },
+        "notes": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "code", "name", "qrCode", "currentQuantity", "minStock"]
+    },
     "DispatchNote": {
       "title": "DispatchNote",
       "description": "Albarán de salida y picking de material para eventos",
@@ -432,6 +454,10 @@
     "/cableBoxes/{boxId}": {
       "schema": { "$ref": "#/entities/CableBox" },
       "description": "Cajas de cables con QR conjunto y control de roturas/pérdidas"
+    },
+    "/consumables/{consumableId}": {
+      "schema": { "$ref": "#/entities/ConsumableItem" },
+      "description": "Consumibles con QR y control automático de compra (líquido de humo, cintas, pilas)"
     },
     "/dispatches/{dispatchId}": {
       "schema": { "$ref": "#/entities/DispatchNote" },

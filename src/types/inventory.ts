@@ -510,6 +510,55 @@ export interface CableBox {
   updatedAt: string;
 }
 
+export interface ConsumableAdjustment {
+  id: string;
+  date: string;
+  type: 'consumed' | 'restocked';
+  amount: number;
+  previousQuantity: number;
+  newQuantity: number;
+  userName: string;
+  eventName?: string;
+  notes?: string;
+}
+
+export interface ConsumableItem {
+  id: string;
+  code: string;
+  name: string;
+  category: string;
+  unit: string;
+  qrCode: string;
+  currentQuantity: number;
+  minStock: number;
+  recommendedOrderQty?: number;
+  supplier?: string;
+  locationName: string;
+  notes?: string;
+  adjustments: ConsumableAdjustment[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export const CONSUMABLE_CATEGORIES = [
+  'Humo / Efectos',
+  'Cintas',
+  'Pilas / Baterías',
+  'Lámparas / Fusibles',
+  'Limpieza',
+  'Otros',
+] as const;
+
+export const CONSUMABLE_UNITS = [
+  'Garrafas 5L',
+  'Litros',
+  'Rollos',
+  'Unidades',
+  'Cajas',
+  'Botes',
+  'Packs',
+] as const;
+
 export interface BackupReminderConfig {
   enabled: boolean;
   intervalMonths: number;

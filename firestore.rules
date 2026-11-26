@@ -222,6 +222,11 @@ service cloud.firestore {
       allow read, write: if isApprovedUser();
     }
 
+    // Consumables with QR & automatic buy-alert tracking (smoke fluid, gaffer tape, batteries)
+    match /consumables/{consumableId} {
+      allow read, write: if isApprovedUser();
+    }
+
     // Real-time Private Phone-to-PC QR Scanner Bridge (Strictly owner-only per authenticated UID)
     match /scanner_bridge/{userId} {
       allow get: if isApprovedUser() && isValidId(userId) && request.auth.uid == userId;

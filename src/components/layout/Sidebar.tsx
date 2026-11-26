@@ -42,7 +42,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onOpenRemoteLinkModal,
   isMobileScannerOnline,
 }) => {
-  const { events, incidents, items, contracts, equipmentKits, cableBoxes, isBackupDue } = useInventory();
+  const { events, incidents, items, contracts, equipmentKits, cableBoxes, consumables, isBackupDue } = useInventory();
   const { isAdmin, allUsers } = useAuth();
 
   const activeIncidents = incidents.filter((i) => i.status !== 'closed' && i.status !== 'repaired').length;
@@ -51,7 +51,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const pendingContracts = contracts.filter((c) => c.status === 'sent' || c.status === 'draft').length;
   const pendingUsersCount = allUsers.filter((u) => u.role === 'pending' || u.status === 'pending').length;
   const officeUrgentAlerts = pendingUsersCount + (isBackupDue ? 1 : 0);
-  const kitsAndBoxesTotal = equipmentKits.length + cableBoxes.length;
+  const consumablesToBuy = consumables.filter((c) => c.currentQuantity <= c.minStock).length;
+  const kitsAndBoxesTotal = equipmentKits.length + cableBoxes.length + consumables.length;
 
   const operationItems = [
     { id: 'events', label: 'Eventos y Agenda', icon: CalendarCheck, badge: activeEvents > 0 ? `${activeEvents}` : undefined, badgeColor: 'bg-amber-500/20 text-amber-400 border border-amber-500/30' },
@@ -113,7 +114,21 @@ export const Sidebar: React.FC<SidebarProps> = ({
       title: 'INVENTARIO',
       items: [
         { id: 'inventory', label: 'Catálogo de Artículos', icon: Package, badge: lowStock > 0 ? `${lowStock} bajo mín.` : undefined, badgeColor: 'bg-orange-500/20 text-orange-400 border border-orange-500/30' },
-        { id: 'kits_cables', label: 'QR Conjuntos y Cables', icon: Boxes, badge: kitsAndBoxesTotal > 0 ? `${kitsAndBoxesTotal}` : undefined, badgeColor: 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30' },
+        {
+          id: 'kits_cables',
+          label: 'QR Conjuntos y Consumibles',
+          icon: Boxes,
+          badge:
+            consumablesToBuy > 0
+              ? `${consumablesToBuy} comprar`
+              : kitsAndBoxesTotal > 0
+              ? `${kitsAndBoxesTotal}`
+              : undefined,
+          badgeColor:
+            consumablesToBuy > 0
+              ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+              : 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30',
+        },
         { id: 'units', label: 'Unidades y N/S', icon: QrCode },
         { id: 'categories', label: 'Categorías de Material', icon: Layers },
         { id: 'locations', label: 'Almacenes y Ubicaciones', icon: MapPin },

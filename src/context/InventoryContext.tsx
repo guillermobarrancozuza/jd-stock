@@ -32,6 +32,8 @@ import {
   EquipmentKit,
   CableBox,
   CableBoxAdjustment,
+  ConsumableItem,
+  ConsumableAdjustment,
   BackupReminderConfig,
 } from '../types/inventory.ts';
 import {
@@ -49,6 +51,7 @@ import {
   INITIAL_DISPATCHES,
   INITIAL_EQUIPMENT_KITS,
   INITIAL_CABLE_BOXES,
+  INITIAL_CONSUMABLES,
   DEFAULT_BANK_DETAILS,
   DEFAULT_CONTRACT_CLAUSES,
   DEFAULT_COMPANY_FISCAL_CONFIG,
@@ -92,6 +95,7 @@ interface InventoryContextType {
   contracts: Contract[];
   equipmentKits: EquipmentKit[];
   cableBoxes: CableBox[];
+  consumables: ConsumableItem[];
   backupConfig: BackupReminderConfig;
   isBackupDue: boolean;
   loading: boolean;
@@ -116,6 +120,17 @@ interface InventoryContextType {
     notes?: string,
     eventName?: string
   ) => Promise<CableBox | null>;
+
+  // Consumables with QR & automatic buy-alert status
+  saveConsumable: (consumable: Partial<ConsumableItem> & { name: string }) => Promise<ConsumableItem>;
+  deleteConsumable: (consumableId: string) => Promise<void>;
+  adjustConsumableQuantity: (
+    consumableId: string,
+    type: 'consumed' | 'restocked',
+    amount: number,
+    notes?: string,
+    eventName?: string
+  ) => Promise<ConsumableItem | null>;
 
   // Backup Reminder & Full JSON Export/Restore
   updateBackupConfig: (partial: Partial<BackupReminderConfig>) => void;
@@ -346,6 +361,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [contracts, setContracts] = useState<Contract[]>(() => getStored('contracts', INITIAL_CONTRACTS));
   const [equipmentKits, setEquipmentKits] = useState<EquipmentKit[]>(() => getStored('equipment_kits', INITIAL_EQUIPMENT_KITS));
   const [cableBoxes, setCableBoxes] = useState<CableBox[]>(() => getStored('cable_boxes', INITIAL_CABLE_BOXES));
+  const [consumables, setConsumables] = useState<ConsumableItem[]>(() => getStored('consumables', INITIAL_CONSUMABLES));
   const [backupConfig, setBackupConfig] = useState<BackupReminderConfig>(() => {
     const stored = getStored<BackupReminderConfig>('backup_config', DEFAULT_BACKUP_CONFIG);
     return { ...DEFAULT_BACKUP_CONFIG, ...stored };
@@ -394,6 +410,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   useEffect(() => { setStored('contracts', contracts); }, [contracts]);
   useEffect(() => { setStored('equipment_kits', equipmentKits); }, [equipmentKits]);
   useEffect(() => { setStored('cable_boxes', cableBoxes); }, [cableBoxes]);
+  useEffect(() => { setStored('consumables', consumables); }, [consumables]);
   useEffect(() => { setStored('backup_config', backupConfig); }, [backupConfig]);
   useEffect(() => { setStored('company_fiscal_config', companyFiscalConfig); }, [companyFiscalConfig]);
   useEffect(() => { setStored('default_bank_details', defaultBankDetails); }, [defaultBankDetails]);
@@ -475,6 +492,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
             ...INITIAL_MOVEMENTS.map((mov) => persistDoc('movements', mov.id, mov)),
             ...INITIAL_EQUIPMENT_KITS.map((kit) => persistDoc('equipmentKits', kit.id, kit)),
             ...INITIAL_CABLE_BOXES.map((box) => persistDoc('cableBoxes', box.id, box)),
+            ...INITIAL_CONSUMABLES.map((cons) => persistDoc('consumables', cons.id, cons)),
             ...(isAdminUser ? INITIAL_CONTRACTS.map((ctr) => persistDoc('contracts', ctr.id, ctr)) : []),
           ]);
         } else {
@@ -493,6 +511,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
             seedCollectionIfEmpty('inventorySessions', getStored<InventorySession[]>('inventory_sessions', [])),
             seedCollectionIfEmpty('equipmentKits', getStored<EquipmentKit[]>('equipment_kits', INITIAL_EQUIPMENT_KITS)),
             seedCollectionIfEmpty('cableBoxes', getStored<CableBox[]>('cable_boxes', INITIAL_CABLE_BOXES)),
+            seedCollectionIfEmpty('consumables', getStored<ConsumableItem[]>('consumables', INITIAL_CONSUMABLES)),
             ...(isAdminUser ? [seedCollectionIfEmpty('contracts', getStored<Contract[]>('contracts', INITIAL_CONTRACTS))] : []),
           ]);
         }
@@ -520,6 +539,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         );
         subscribeCollection<EquipmentKit>('equipmentKits', setEquipmentKits, sortByDateDesc);
         subscribeCollection<CableBox>('cableBoxes', setCableBoxes, sortByDateDesc);
+        subscribeCollection<ConsumableItem>('consumables', setConsumables, sortByDateDesc);
 
         if (isAdminUser) {
           subscribeCollection<Contract>('contracts', setContracts, sortByDateDesc);
@@ -1229,6 +1249,119 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return updatedBox;
   };
 
+  // --- Consumables with QR & Automatic Buy-Alert Tracking ---
+  const saveConsumable = async (
+    consData: Partial<ConsumableItem> & { name: string }
+  ): Promise<ConsumableItem> => {
+    const now = new Date().toISOString();
+    const id = consData.id || `cons-${Date.now()}`;
+    const cleanCode =
+      consData.code?.trim().toUpperCase() ||
+      `CONS-${consData.name.slice(0, 4).toUpperCase().replace(/[^A-Z0-9]/g, 'X')}-${Math.floor(10 + Math.random() * 90)}`;
+    const qrCode = consData.qrCode?.trim() || `QR-${cleanCode}`;
+    const currentQty = consData.currentQuantity !== undefined ? Math.max(0, Number(consData.currentQuantity)) : 0;
+    const minStock = consData.minStock !== undefined ? Math.max(0, Number(consData.minStock)) : 2;
+    const recommendedOrderQty =
+      consData.recommendedOrderQty !== undefined
+        ? Math.max(1, Number(consData.recommendedOrderQty))
+        : Math.max(2, minStock * 2);
+
+    const fullConsumable: ConsumableItem = {
+      id,
+      code: cleanCode,
+      name: consData.name.trim(),
+      category: consData.category || 'Humo / Efectos',
+      unit: consData.unit || 'Garrafas 5L',
+      qrCode,
+      currentQuantity: currentQty,
+      minStock,
+      recommendedOrderQty,
+      supplier: consData.supplier?.trim() || '',
+      locationName: consData.locationName?.trim() || 'Nave Central',
+      notes: consData.notes?.trim() || '',
+      adjustments: consData.adjustments || [],
+      createdAt: consData.createdAt || now,
+      updatedAt: now,
+    };
+
+    setConsumables((prev) => {
+      const exists = prev.some((c) => c.id === id);
+      return exists ? prev.map((c) => (c.id === id ? fullConsumable : c)) : [fullConsumable, ...prev];
+    });
+
+    await persistDoc('consumables', id, fullConsumable);
+    return fullConsumable;
+  };
+
+  const deleteConsumable = async (consumableId: string) => {
+    setConsumables((prev) => prev.filter((c) => c.id !== consumableId));
+    await removeDoc('consumables', consumableId);
+  };
+
+  const adjustConsumableQuantity = async (
+    consumableId: string,
+    type: 'consumed' | 'restocked',
+    amount: number,
+    notes?: string,
+    eventName?: string
+  ): Promise<ConsumableItem | null> => {
+    const item = consumables.find((c) => c.id === consumableId);
+    if (!item) return null;
+    const cleanAmt = Math.max(1, Math.round(amount));
+    const now = new Date().toISOString();
+
+    const prevQty = item.currentQuantity;
+    const newQty = type === 'restocked' ? prevQty + cleanAmt : Math.max(0, prevQty - cleanAmt);
+    const needsBuying = newQty <= item.minStock;
+
+    const adj: ConsumableAdjustment = {
+      id: `cadj-${Date.now()}`,
+      date: now,
+      type,
+      amount: cleanAmt,
+      previousQuantity: prevQty,
+      newQuantity: newQty,
+      userName: userProfile?.name || 'Operario Almacén',
+      eventName: eventName || undefined,
+      notes:
+        notes ||
+        (type === 'consumed'
+          ? `Consumo registrado (${prevQty} → ${newQty} ${item.unit})${needsBuying ? ' · AVISO: HAY QUE COMPRAR' : ''}`
+          : `Reposición / compra recibida (+${cleanAmt} ${item.unit})`),
+    };
+
+    const updated: ConsumableItem = {
+      ...item,
+      currentQuantity: newQty,
+      adjustments: [adj, ...(item.adjustments || [])],
+      updatedAt: now,
+    };
+
+    setConsumables((prev) => prev.map((c) => (c.id === consumableId ? updated : c)));
+    await persistDoc('consumables', consumableId, updated);
+
+    await recordMovement({
+      type: type === 'restocked' ? 'in' : 'adjustment',
+      itemId: item.id,
+      itemName: `${item.name} (Consumible)`,
+      itemCode: item.code,
+      quantity: cleanAmt,
+      sourceLocation: item.locationName,
+      targetLocation: type === 'consumed' ? (eventName || 'Consumo en Producción / Evento') : item.locationName,
+      eventName: eventName || null,
+      reason:
+        type === 'consumed'
+          ? `Gasto de ${cleanAmt} ${item.unit} de ${item.name} (${prevQty} → ${newQty}). ${
+              needsBuying ? 'ALERTA: HAY QUE COMPRAR' : 'Stock suficiente'
+            }`
+          : `Reposición de +${cleanAmt} ${item.unit} de ${item.name} (${prevQty} → ${newQty})`,
+      notes: notes || '',
+      referenceCode: item.qrCode,
+    });
+
+    return updated;
+  };
+
   // --- Backup Reminder & Full JSON Export / Restore ---
   const updateBackupConfig = (partial: Partial<BackupReminderConfig>) => {
     setBackupConfig((prev) => ({ ...prev, ...partial }));
@@ -1247,6 +1380,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         itemUnits,
         equipmentKits,
         cableBoxes,
+        consumables,
         categories,
         locations,
         events,
@@ -1351,6 +1485,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (Array.isArray(data.itemUnits)) { setItemUnits(data.itemUnits); syncTasks.push(syncRestored('itemUnits', data.itemUnits)); count++; }
     if (Array.isArray(data.equipmentKits)) { setEquipmentKits(data.equipmentKits); syncTasks.push(syncRestored('equipmentKits', data.equipmentKits)); count++; }
     if (Array.isArray(data.cableBoxes)) { setCableBoxes(data.cableBoxes); syncTasks.push(syncRestored('cableBoxes', data.cableBoxes)); count++; }
+    if (Array.isArray(data.consumables)) { setConsumables(data.consumables); syncTasks.push(syncRestored('consumables', data.consumables)); count++; }
     if (Array.isArray(data.categories)) { setCategories(data.categories); syncTasks.push(syncRestored('categories', data.categories)); count++; }
     if (Array.isArray(data.locations)) { setLocations(data.locations); syncTasks.push(syncRestored('locations', data.locations)); count++; }
     if (Array.isArray(data.events)) { setEvents(data.events); syncTasks.push(syncRestored('events', data.events)); count++; }
@@ -3138,6 +3273,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setItemUnits(INITIAL_UNITS);
     setEquipmentKits(INITIAL_EQUIPMENT_KITS);
     setCableBoxes(INITIAL_CABLE_BOXES);
+    setConsumables(INITIAL_CONSUMABLES);
     setCategories(INITIAL_CATEGORIES);
     setLocations(INITIAL_LOCATIONS);
     setEvents(INITIAL_EVENTS);
@@ -3166,6 +3302,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       ...INITIAL_MOVEMENTS.map((mov) => persistDoc('movements', mov.id, mov)),
       ...INITIAL_EQUIPMENT_KITS.map((kit) => persistDoc('equipmentKits', kit.id, kit)),
       ...INITIAL_CABLE_BOXES.map((box) => persistDoc('cableBoxes', box.id, box)),
+      ...INITIAL_CONSUMABLES.map((cons) => persistDoc('consumables', cons.id, cons)),
       ...(userProfile?.role === 'admin' ? INITIAL_CONTRACTS.map((ctr) => persistDoc('contracts', ctr.id, ctr)) : []),
     ]);
   };
@@ -3176,6 +3313,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setItemUnits([]);
     setEquipmentKits([]);
     setCableBoxes([]);
+    setConsumables([]);
     setEvents([]);
     setEventItems([]);
     setIncidents([]);
@@ -3192,6 +3330,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     localStorage.setItem('prompt_maestro_units', JSON.stringify([]));
     localStorage.setItem('prompt_maestro_equipment_kits', JSON.stringify([]));
     localStorage.setItem('prompt_maestro_cable_boxes', JSON.stringify([]));
+    localStorage.setItem('prompt_maestro_consumables', JSON.stringify([]));
     localStorage.setItem('prompt_maestro_events', JSON.stringify([]));
     localStorage.setItem('prompt_maestro_event_items', JSON.stringify([]));
     localStorage.setItem('prompt_maestro_incidents', JSON.stringify([]));
@@ -3219,6 +3358,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         'suppliers',
         'equipmentKits',
         'cableBoxes',
+        'consumables',
         ...(userProfile?.role === 'admin' ? ['contracts'] : []),
       ];
       for (const colName of collectionsToClear) {
@@ -3252,6 +3392,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         contracts,
         equipmentKits,
         cableBoxes,
+        consumables,
         backupConfig,
         isBackupDue,
         companyFiscalConfig,
@@ -3270,6 +3411,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         saveCableBox,
         deleteCableBox,
         adjustCableBoxQuantity,
+        saveConsumable,
+        deleteConsumable,
+        adjustConsumableQuantity,
 
         updateBackupConfig,
         exportFullBackupJson,

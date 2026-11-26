@@ -17,6 +17,9 @@ import {
   Camera,
   Copy,
   Check,
+  Droplets,
+  ShoppingCart,
+  Plus,
 } from 'lucide-react';
 import { ScannedMatchResult } from '../../lib/qrScannerUtils.ts';
 import { useInventory } from '../../context/InventoryContext.tsx';
@@ -35,7 +38,15 @@ export const QrScanResultModal: React.FC<QrScanResultModalProps> = ({
   onScanAgain,
   onNavigate,
 }) => {
-  const { equipmentKits, cableBoxes, items, itemUnits, adjustCableBoxQuantity } = useInventory();
+  const {
+    equipmentKits,
+    cableBoxes,
+    consumables,
+    items,
+    itemUnits,
+    adjustCableBoxQuantity,
+    adjustConsumableQuantity,
+  } = useInventory();
   const [showPrintSticker, setShowPrintSticker] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -48,6 +59,9 @@ export const QrScanResultModal: React.FC<QrScanResultModalProps> = ({
     : null;
   const liveBox = result.cableBox
     ? cableBoxes.find((b) => b.id === result.cableBox?.id) || result.cableBox
+    : null;
+  const liveConsumable = result.consumable
+    ? consumables.find((c) => c.id === result.consumable?.id) || result.consumable
     : null;
   const liveUnit = result.unit
     ? itemUnits.find((u) => u.id === result.unit?.id) || result.unit
@@ -72,6 +86,24 @@ export const QrScanResultModal: React.FC<QrScanResultModalProps> = ({
     }
   };
 
+  const handleConsumableAdjust = async (type: 'consumed' | 'restocked') => {
+    if (!liveConsumable) return;
+    const updated = await adjustConsumableQuantity(liveConsumable.id, type, 1);
+    if (updated) {
+      const needsBuy = updated.currentQuantity <= updated.minStock;
+      setFeedback(
+        type === 'consumed'
+          ? `Gastado 1 ${updated.unit}. Quedan ${updated.currentQuantity} ${updated.unit} — ${
+              needsBuy ? '⚠️ HAY QUE COMPRAR' : '✓ NO HACE FALTA COMPRAR'
+            }.`
+          : `Repuesto +1 ${updated.unit}. Ahora hay ${updated.currentQuantity} ${updated.unit} — ${
+              needsBuy ? 'Sigue bajo mínimo (hay que comprar)' : '✓ Stock OK'
+            }.`
+      );
+      setTimeout(() => setFeedback(null), 4000);
+    }
+  };
+
   return (
     <>
       <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto no-print">
@@ -84,6 +116,8 @@ export const QrScanResultModal: React.FC<QrScanResultModalProps> = ({
                   <Boxes className="w-5 h-5" />
                 ) : liveBox ? (
                   <Cable className="w-5 h-5 text-cyan-400" />
+                ) : liveConsumable ? (
+                  <Droplets className="w-5 h-5 text-emerald-400" />
                 ) : contract ? (
                   <FileSignature className="w-5 h-5" />
                 ) : (
@@ -97,6 +131,8 @@ export const QrScanResultModal: React.FC<QrScanResultModalProps> = ({
                       ? 'QR CONJUNTO / CARRO'
                       : liveBox
                       ? 'QR CAJA DE CABLES'
+                      : liveConsumable
+                      ? 'QR CONSUMIBLE'
                       : liveUnit
                       ? 'UNIDAD FÍSICA N/S'
                       : liveItem
@@ -114,6 +150,7 @@ export const QrScanResultModal: React.FC<QrScanResultModalProps> = ({
                 <h2 className="text-base font-bold text-white truncate mt-0.5">
                   {liveKit?.name ||
                     liveBox?.name ||
+                    liveConsumable?.name ||
                     (liveUnit ? `${liveUnit.itemName} (${liveUnit.serialNumber})` : '') ||
                     liveItem?.name ||
                     (contract ? `${contract.code} — ${contract.eventName}` : result.rawText)}
@@ -255,8 +292,117 @@ export const QrScanResultModal: React.FC<QrScanResultModalProps> = ({
               </div>
             )}
 
+            {/* CASE 2B: CONSUMABLE WITH BUY / NO-BUY VERDICT */}
+            {liveConsumable && (() => {
+              const isOut = liveConsumable.currentQuantity === 0;
+              const needsBuy = liveConsumable.currentQuantity <= liveConsumable.minStock;
+              return (
+                <div className="space-y-3">
+                  {/* Prominent Buy / No-Buy Verdict Banner */}
+                  <div
+                    className={`p-3.5 rounded-xl border flex items-center justify-between gap-3 ${
+                      isOut
+                        ? 'bg-rose-500/15 border-rose-500/50 text-rose-200'
+                        : needsBuy
+                        ? 'bg-amber-500/15 border-amber-500/50 text-amber-200'
+                        : 'bg-emerald-500/15 border-emerald-500/40 text-emerald-200'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5">
+                      {needsBuy ? (
+                        <ShoppingCart className={`w-5 h-5 shrink-0 ${isOut ? 'text-rose-400' : 'text-amber-400'}`} />
+                      ) : (
+                        <CheckCircle2 className="w-5 h-5 shrink-0 text-emerald-400" />
+                      )}
+                      <div>
+                        <div className="text-xs font-black uppercase tracking-wide">
+                          {isOut
+                            ? 'SIN STOCK — HAY QUE COMPRAR YA'
+                            : needsBuy
+                            ? 'HAY QUE COMPRAR REPOSICIÓN'
+                            : 'NO HACE FALTA COMPRAR — STOCK OK'}
+                        </div>
+                        <div className="text-[11px] opacity-90">
+                          {needsBuy
+                            ? `Quedan ${liveConsumable.currentQuantity} ${liveConsumable.unit} (mínimo: ${liveConsumable.minStock}).${
+                                liveConsumable.recommendedOrderQty
+                                  ? ` Recomendado pedir: ${liveConsumable.recommendedOrderQty} ${liveConsumable.unit}.`
+                                  : ''
+                              }`
+                            : `Tienes ${liveConsumable.currentQuantity} ${liveConsumable.unit} (aviso de compra a partir de ${liveConsumable.minStock}).`}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-2 text-center font-mono">
+                    <div className="p-3 rounded-xl bg-[#0d1117] border border-[#30363d]">
+                      <span className="text-[10px] text-zinc-400 block">Stock Actual</span>
+                      <span
+                        className={`text-xl font-black ${
+                          isOut ? 'text-rose-400' : needsBuy ? 'text-amber-300' : 'text-emerald-400'
+                        }`}
+                      >
+                        {liveConsumable.currentQuantity}
+                      </span>
+                      <span className="text-[10px] text-zinc-400 block">{liveConsumable.unit}</span>
+                    </div>
+                    <div className="p-3 rounded-xl bg-[#0d1117] border border-amber-500/30">
+                      <span className="text-[10px] text-amber-400 block">Mínimo Aviso</span>
+                      <span className="text-xl font-black text-amber-300">{liveConsumable.minStock}</span>
+                      <span className="text-[10px] text-zinc-400 block">comprar si ≤ {liveConsumable.minStock}</span>
+                    </div>
+                    <div className="p-3 rounded-xl bg-[#0d1117] border border-cyan-500/30">
+                      <span className="text-[10px] text-cyan-400 block">Pedido Sugerido</span>
+                      <span className="text-xl font-black text-cyan-300">
+                        {liveConsumable.recommendedOrderQty || Math.max(2, liveConsumable.minStock * 2)}
+                      </span>
+                      <span className="text-[10px] text-zinc-400 block">{liveConsumable.unit}</span>
+                    </div>
+                  </div>
+
+                  <div className="p-3.5 rounded-xl bg-emerald-950/20 border border-emerald-500/30 space-y-2.5">
+                    <div className="text-[11px] font-bold text-emerald-300">
+                      Registrar gasto o compra directamente desde este QR:
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        disabled={liveConsumable.currentQuantity <= 0}
+                        onClick={() => handleConsumableAdjust('consumed')}
+                        className="flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-xl bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 border border-rose-500/40 font-bold transition cursor-pointer disabled:opacity-40"
+                      >
+                        <Minus className="w-4 h-4" />
+                        <span>-1 Gastado</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleConsumableAdjust('restocked')}
+                        className="flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-200 border border-emerald-500/40 font-bold transition cursor-pointer"
+                      >
+                        <Plus className="w-4 h-4" />
+                        <span>+1 Comprado</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-zinc-400 px-1">
+                    <span>
+                      Categoría: <strong className="text-zinc-200">{liveConsumable.category}</strong>
+                    </span>
+                    {liveConsumable.supplier && (
+                      <span>
+                        Proveedor: <strong className="text-zinc-200">{liveConsumable.supplier}</strong>
+                      </span>
+                    )}
+                    <span>Ubicación: {liveConsumable.locationName}</span>
+                  </div>
+                </div>
+              );
+            })()}
+
             {/* CASE 3: ITEM UNIT OR CATALOG ITEM */}
-            {!liveKit && !liveBox && (liveUnit || liveItem) && (
+            {!liveKit && !liveBox && !liveConsumable && (liveUnit || liveItem) && (
               <div className="space-y-3">
                 <div className="grid grid-cols-2 gap-3 p-3 rounded-xl bg-[#0d1117] border border-[#30363d]">
                   <div>
@@ -353,7 +499,7 @@ export const QrScanResultModal: React.FC<QrScanResultModalProps> = ({
             {/* Quick Navigation Actions */}
             {result.isDirectMatch && (
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 pt-2 border-t border-[#30363d]">
-                {(liveKit || liveBox || liveUnit || liveItem) && (
+                {(liveKit || liveBox || liveConsumable || liveUnit || liveItem) && (
                   <button
                     type="button"
                     onClick={() => setShowPrintSticker(true)}
@@ -380,12 +526,18 @@ export const QrScanResultModal: React.FC<QrScanResultModalProps> = ({
                   type="button"
                   onClick={() => {
                     onClose();
-                    onNavigate(liveKit || liveBox ? 'kits_cables' : 'maintenance');
+                    onNavigate(liveKit || liveBox || liveConsumable ? 'kits_cables' : 'maintenance');
                   }}
                   className="flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-[#30363d] font-bold cursor-pointer"
                 >
-                  {liveKit || liveBox ? <QrCode className="w-3.5 h-3.5" /> : <Wrench className="w-3.5 h-3.5 text-rose-400" />}
-                  <span>{liveKit || liveBox ? 'Ver Conjuntos' : 'Parte SAT'}</span>
+                  {liveKit || liveBox || liveConsumable ? (
+                    <QrCode className="w-3.5 h-3.5" />
+                  ) : (
+                    <Wrench className="w-3.5 h-3.5 text-rose-400" />
+                  )}
+                  <span>
+                    {liveConsumable ? 'Ver Consumibles' : liveKit || liveBox ? 'Ver Conjuntos' : 'Parte SAT'}
+                  </span>
                 </button>
               </div>
             )}
@@ -421,6 +573,7 @@ export const QrScanResultModal: React.FC<QrScanResultModalProps> = ({
           unit={liveUnit}
           kit={liveKit}
           cableBox={liveBox}
+          consumable={liveConsumable}
         />
       )}
     </>

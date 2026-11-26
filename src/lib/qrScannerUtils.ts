@@ -1,5 +1,5 @@
 import jsQR from 'jsqr';
-import { Item, ItemUnit, EquipmentKit, CableBox, Contract } from '../types/inventory.ts';
+import { Item, ItemUnit, EquipmentKit, CableBox, Contract, ConsumableItem } from '../types/inventory.ts';
 
 /**
  * Result of matching a scanned QR / barcode string against inventory
@@ -10,6 +10,7 @@ export interface ScannedMatchResult {
   item: Item | null;
   kit?: EquipmentKit | null;
   cableBox?: CableBox | null;
+  consumable?: ConsumableItem | null;
   contract?: Contract | null;
   serialNumber: string;
   isDirectMatch: boolean;
@@ -21,6 +22,7 @@ export interface ScannedMatchResult {
     | 'barcode'
     | 'kit_qrcode'
     | 'cable_box_qrcode'
+    | 'consumable_qrcode'
     | 'contract_code'
     | 'raw_text';
 }
@@ -132,7 +134,8 @@ export function findUnitOrItemByCode(
   items: Item[],
   equipmentKits: EquipmentKit[] = [],
   cableBoxes: CableBox[] = [],
-  contracts: Contract[] = []
+  contracts: Contract[] = [],
+  consumables: ConsumableItem[] = []
 ): ScannedMatchResult {
   const clean = extractQrPayload(rawText);
   const upper = clean.toUpperCase();
@@ -182,6 +185,29 @@ export function findUnitOrItemByCode(
       serialNumber: matchedBox.code,
       isDirectMatch: true,
       matchType: 'cable_box_qrcode',
+    };
+  }
+
+  // 0c. Match Consumable (Líquido de humo, cintas, pilas con QR)
+  const matchedConsumable = consumables.find(
+    (c) =>
+      c.qrCode.toUpperCase() === upper ||
+      c.code.toUpperCase() === upper ||
+      c.code.toUpperCase() === withoutQr ||
+      c.id === clean
+  );
+  if (matchedConsumable) {
+    return {
+      rawText: clean,
+      unit: null,
+      item: null,
+      kit: null,
+      cableBox: null,
+      consumable: matchedConsumable,
+      contract: null,
+      serialNumber: matchedConsumable.code,
+      isDirectMatch: true,
+      matchType: 'consumable_qrcode',
     };
   }
 
@@ -295,6 +321,7 @@ export function findUnitOrItemByCode(
     item: null,
     kit: null,
     cableBox: null,
+    consumable: null,
     contract: null,
     serialNumber: withoutQr || clean,
     isDirectMatch: false,
